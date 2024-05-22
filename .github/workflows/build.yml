@@ -1,0 +1,165 @@
+name: Build
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches: 
+      - main
+jobs:
+  versionning:
+    name: Versionning
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.genver.outputs.version }}
+      release: ${{ steps.genver.outputs.release }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Generate Version
+      id: genver
+      run: |
+        VERSION=$(docker run --rm -v $(pwd):/repo codacy/git-version /bin/git-version --folder=/repo --release-branch=${{ github.ref_name }}-pre --dev-branch=main)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "VERSION : $VERSION"
+        RELEASE=$(docker run --rm -v $(pwd):/repo codacy/git-version /bin/git-version --folder=/repo --release-branch=${{ github.ref_name }} --dev-branch=main)
+        echo "release=$RELEASE" >> $GITHUB_OUTPUT
+        echo "RELEASE : $RELEASE"
+        echo "Version :" >> $GITHUB_STEP_SUMMARY
+        echo "$VERSION" >> $GITHUB_STEP_SUMMARY
+        echo "Release :" >> $GITHUB_STEP_SUMMARY
+        echo "$RELEASE" >> $GITHUB_STEP_SUMMARY
+
+  docker:
+    name: Docker image Build
+    runs-on: ubuntu-latest
+    needs:
+      - versionning
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { path: pdc-update, name: armonik-pdc-update, platforms: "linux/amd64" }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: login
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_LOGIN }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          file: "${{ matrix.image.path }}/Dockerfile"
+          context: "${{ matrix.image.path }}"
+          platforms: "${{ matrix.image.platforms }}"
+          push: true
+          tags: |
+              dockerhubaneo/${{ matrix.image.name }}:${{ needs.versionning.outputs.version }}
+  rust:
+    name: Rust Build and Test
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - pdc-update
+        target:
+          # Linux Musl
+          - { platform: aarch64-unknown-linux-musl, os: linux, runner: ubuntu-latest, run: true }
+          - { platform: arm-unknown-linux-musleabi, os: linux, runner: ubuntu-latest, run: true }
+          - { platform: i686-unknown-linux-musl, os: linux, runner: ubuntu-latest, run: true }
+          - { platform: x86_64-unknown-linux-musl, os: linux, runner: ubuntu-latest, run: true }
+
+          # Windows
+          - { platform: aarch64-pc-windows-msvc, os: windows, runner: windows-latest, run: false }
+          - { platform: i686-pc-windows-msvc, os: windows, runner: windows-latest, run: true }
+          - { platform: x86_64-pc-windows-msvc, os: windows, runner: windows-latest, run: true }
+        toolchain:
+          - stable
+          - nightly
+    runs-on: ${{ matrix.target.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: protoc,sccache
+      - name: Install toolchain
+        if: ${{ !contains(matrix.toolchain, 'nightly') }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.platform }}
+          toolchain: ${{ matrix.toolchain }}
+          components: rust-src,rust-docs,rustfmt,clippy
+      - name: Install toolchain (with miri)
+        if: contains(matrix.toolchain, 'nightly')
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.platform }}
+          toolchain: ${{ matrix.toolchain }}
+          components: rust-src,rust-docs,rustfmt,clippy,miri
+      - name: Install cross-compilation tools
+        uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.target.platform }}
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2.7.3
+        with:
+          shared-key: "build-${{ matrix.project }}-${{ matrix.toolchain }}-${{ matrix.target.platform }}"
+          workspaces: "${{ matrix.project }}"
+      - name: Build
+        working-directory: "${{ matrix.project }}"
+        run: |
+          cargo build --all --locked
+      - name: Test
+        if: matrix.target.run
+        working-directory: "${{ matrix.project }}"
+        run: |
+          cargo test --all --locked
+      - name: Test Release
+        if: matrix.target.run
+        working-directory: "${{ matrix.project }}"
+        run: |
+          cargo test --all --locked --release
+      - name: Test Miri
+        if: contains(matrix.toolchain, 'nightly')
+        working-directory: "${{ matrix.project }}"
+        run: |
+          cargo miri test --all --locked
+      - name: Format
+        working-directory: "${{ matrix.project }}"
+        run: |
+          cargo fmt --all --check
+      - name: Doc
+        if: matrix.target.os == 'linux'
+        working-directory: "${{ matrix.project }}"
+        run: |
+          RUSTDOCFLAGS="-Dwarnings" cargo doc
+      - name: Example
+        if: matrix.target.os == 'linux' && matrix.target.run
+        working-directory: "${{ matrix.project }}"
+        timeout-minutes: 1
+        run: |
+          set -x
+          for example in examples/*.rs; do
+            if [ -e "$example" ]; then
+              example="${example#examples/}"
+              example="${example%.rs}"
+              RUST_LOG=trace cargo run --locked --example "$example"
+            fi
+          done
+      - name: Clippy
+        working-directory: "${{ matrix.project }}"
+        run: |
+          cargo clippy --all --no-deps -- -Dwarnings -Dunused-crate-dependencies
