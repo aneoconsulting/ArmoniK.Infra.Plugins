@@ -29,5 +29,6 @@ RUN touch src/main.rs && cargo build --release && mv target/*/release/pdc-update
 
 FROM scratch
 COPY --from=build /app/pdc-update /pdc-update
+USER 65534:65534
 ENTRYPOINT ["/pdc-update"]
 CMD []
