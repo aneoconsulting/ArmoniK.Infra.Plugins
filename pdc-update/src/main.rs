@@ -101,7 +101,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             })
             .collect::<Vec<_>>();
 
+        let n = updates.len();
+
         // Apply updates
         worker_updater.update_many(updates).await?;
+
+        match n {
+            0 => {}
+            1 => log::info!("{n} pod has been updated"),
+            _ => log::info!("{n} pods have been updated"),
+        }
     }
 }
