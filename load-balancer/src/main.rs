@@ -1,12 +1,75 @@
-use std::sync::Arc;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use armonik::reexports::tonic;
+use clap::Parser;
+use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 
 pub mod cluster;
 pub mod ref_guard;
 pub mod service;
 pub mod utils;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ClusterConfig {
+    /// Endpoint for sending requests
+    pub endpoint: String,
+    /// Path to the certificate file in pem format
+    #[serde(default)]
+    pub cert_pem: String,
+    /// Path to the key file in pem format
+    #[serde(default)]
+    pub key_pem: String,
+    /// Path to the Certificate Authority file in pem format
+    #[serde(default)]
+    pub ca_cert: String,
+    /// Allow unsafe connections to the endpoint (without SSL), defaults to false
+    #[serde(default)]
+    pub allow_unsafe_connection: bool,
+    /// Override the endpoint name during SSL verification
+    #[serde(default)]
+    pub override_target_name: String,
+}
+
+impl From<ClusterConfig> for armonik::client::ClientConfigArgs {
+    fn from(
+        ClusterConfig {
+            endpoint,
+            cert_pem,
+            key_pem,
+            ca_cert,
+            allow_unsafe_connection,
+            override_target_name,
+        }: ClusterConfig,
+    ) -> Self {
+        armonik::client::ClientConfigArgs {
+            endpoint,
+            cert_pem,
+            key_pem,
+            ca_cert,
+            allow_unsafe_connection,
+            override_target_name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LbConfig {
+    pub clusters: HashMap<String, ClusterConfig>,
+    #[serde(default)]
+    pub listen_ip: String,
+    #[serde(default)]
+    pub listen_port: u16,
+    #[serde(default)]
+    pub refresh_delay: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Parser)]
+pub struct Cli {
+    /// Filename of the config file
+    #[arg(short, long, default_value = "")]
+    pub config: String,
+}
 
 /// Wait for termination signal (either SIGINT or SIGTERM)
 #[cfg(unix)]
@@ -75,16 +138,40 @@ async fn wait_terminate() {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), eyre::Report> {
     env_logger::init();
 
-    let service = Arc::new(
-        service::Service::new([(
-            String::from("A"),
-            cluster::Cluster::new(armonik::ClientConfig::from_env().unwrap()),
-        )])
-        .await,
-    );
+    let cli = Cli::parse();
+
+    let mut conf = config::Config::builder()
+        .add_source(
+            config::Environment::with_prefix("LoadBalancer")
+                .convert_case(config::Case::Snake)
+                .separator("__"),
+        )
+        .set_default("listen_ip", "0.0.0.0")?
+        .set_default("listen_port", 8081)?
+        .set_default("refresh_delay", "10")?;
+
+    if !cli.config.is_empty() {
+        conf = conf.add_source(config::File::with_name(&cli.config));
+    }
+
+    let conf: LbConfig = conf.build()?.try_deserialize()?;
+
+    let mut clusters = HashMap::with_capacity(conf.clusters.len());
+
+    for (name, cluster_config) in conf.clusters {
+        clusters.insert(
+            name,
+            cluster::Cluster::new(armonik::ClientConfig::from_config_args(
+                cluster_config.into(),
+            )?),
+        );
+    }
+
+    let service = Arc::new(service::Service::new(clusters).await);
+    let refresh_delay = std::time::Duration::from_secs_f64(conf.refresh_delay.parse()?);
 
     let router = tonic::transport::Server::builder()
         .layer(TraceLayer::new_for_grpc())
@@ -131,7 +218,7 @@ async fn main() {
         let service = service.clone();
 
         async move {
-            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(10));
+            let mut timer = tokio::time::interval(refresh_delay);
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             loop {
@@ -143,7 +230,8 @@ async fn main() {
         }
     });
 
-    let mut service_future = tokio::spawn(router.serve("0.0.0.0:1337".parse().unwrap()));
+    let mut service_future =
+        tokio::spawn(router.serve(SocketAddr::new(conf.listen_ip.parse()?, conf.listen_port)));
 
     log::info!("Application running");
 
@@ -176,4 +264,6 @@ async fn main() {
     _ = service_future.await;
 
     log::info!("Application stopped");
+
+    Ok(())
 }

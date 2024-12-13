@@ -292,7 +292,8 @@ impl Service {
     }
 
     pub async fn update_sessions(&self) -> Result<(), Status> {
-        for cluster in self.clusters.values() {
+        for (name, cluster) in &self.clusters {
+            log::debug!("Refreshing sessions from {}\n  {:?}", name, cluster);
             let mut stream = std::pin::pin!(
                 cluster
                     .client()
