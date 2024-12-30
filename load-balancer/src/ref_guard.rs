@@ -1,4 +1,5 @@
 use std::{
+    future::{Future, IntoFuture},
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
 };
@@ -51,6 +52,22 @@ impl<G: Unpin, T> RefGuard<G, &T> {
 }
 
 impl<G: Unpin, T: Unpin> RefGuard<G, T> {
+    unsafe fn into_parts(mut self) -> (G, T) {
+        unsafe {
+            let ref_guard = (
+                ManuallyDrop::take(&mut self.guard),
+                ManuallyDrop::take(&mut self.reference),
+            );
+            std::mem::forget(self);
+            ref_guard
+        }
+    }
+    unsafe fn from_parts(guard: G, reference: T) -> Self {
+        Self {
+            guard: ManuallyDrop::new(guard),
+            reference: ManuallyDrop::new(reference),
+        }
+    }
     pub fn get(&self) -> &T {
         let x = self.reference.deref();
         x
@@ -60,18 +77,33 @@ impl<G: Unpin, T: Unpin> RefGuard<G, T> {
         self.reference.deref_mut()
     }
 
-    pub fn map<U: Unpin>(mut self, f: impl FnOnce(T) -> U) -> RefGuard<G, U> {
-        let (guard, reference) = unsafe {
-            let ref_guard = (
-                ManuallyDrop::take(&mut self.guard),
-                ManuallyDrop::take(&mut self.reference),
-            );
-            std::mem::forget(self);
-            ref_guard
-        };
-        RefGuard {
-            guard: ManuallyDrop::new(guard),
-            reference: ManuallyDrop::new(f(reference)),
+    pub fn map<U: Unpin>(self, f: impl FnOnce(T) -> U) -> RefGuard<G, U> {
+        unsafe {
+            let (guard, reference) = self.into_parts();
+            RefGuard::from_parts(guard, f(reference))
+        }
+    }
+
+    pub async fn map_async<Func, Fut, Out>(self, f: Func) -> RefGuard<G, Out>
+    where
+        Func: FnOnce(T) -> Fut,
+        Fut: Future<Output = Out>,
+        Out: Unpin,
+    {
+        unsafe {
+            let (guard, reference) = self.into_parts();
+            RefGuard::from_parts(guard, f(reference).await)
+        }
+    }
+
+    pub async fn map_await(self) -> RefGuard<G, <T as IntoFuture>::Output>
+    where
+        T: IntoFuture,
+        <T as IntoFuture>::Output: Unpin,
+    {
+        unsafe {
+            let (guard, reference) = self.into_parts();
+            RefGuard::from_parts(guard, reference.await)
         }
     }
 }
@@ -90,14 +122,32 @@ impl<'a, G: Unpin, T: Unpin + DerefMut> RefGuard<G, &'a mut T> {
     }
 }
 
-impl<G: Unpin, T: Unpin + Deref> Deref for RefGuard<G, &'_ T> {
+impl<G: Unpin, T: Unpin> RefGuard<G, Option<T>> {
+    pub fn into_option(self) -> Option<RefGuard<G, T>> {
+        unsafe {
+            let (guard, reference) = self.into_parts();
+            reference.map(|reference| RefGuard::from_parts(guard, reference))
+        }
+    }
+}
+
+impl<G: Unpin, T: Unpin, E: Unpin> RefGuard<G, Result<T, E>> {
+    pub fn into_result(self) -> Result<RefGuard<G, T>, E> {
+        unsafe {
+            let (guard, reference) = self.into_parts();
+            reference.map(|reference| RefGuard::from_parts(guard, reference))
+        }
+    }
+}
+
+impl<G: Unpin, T: Unpin> Deref for RefGuard<G, &'_ T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
         self.get()
     }
 }
-impl<G: Unpin, T: Unpin + Deref> Deref for RefGuard<G, &'_ mut T> {
+impl<G: Unpin, T: Unpin> Deref for RefGuard<G, &'_ mut T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -105,7 +155,7 @@ impl<G: Unpin, T: Unpin + Deref> Deref for RefGuard<G, &'_ mut T> {
     }
 }
 
-impl<G: Unpin, T: Unpin + DerefMut> DerefMut for RefGuard<G, &'_ mut T> {
+impl<G: Unpin, T: Unpin> DerefMut for RefGuard<G, &'_ mut T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.get_mut()
     }

@@ -5,6 +5,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 
+pub mod async_pool;
 pub mod cluster;
 pub mod ref_guard;
 pub mod service;
