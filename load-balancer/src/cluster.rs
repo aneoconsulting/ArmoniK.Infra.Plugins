@@ -4,7 +4,8 @@ use armonik::reexports::{tokio_stream, tonic};
 
 #[derive(Debug, Default, Clone)]
 pub struct Cluster {
-    endpoint: armonik::ClientConfig,
+    pub name: String,
+    pub endpoint: armonik::ClientConfig,
 }
 
 impl PartialEq for Cluster {
@@ -30,8 +31,11 @@ impl Hash for Cluster {
 }
 
 impl Cluster {
-    pub fn new(config: armonik::ClientConfig) -> Self {
-        Self { endpoint: config }
+    pub fn new(name: String, config: armonik::ClientConfig) -> Self {
+        Self {
+            name,
+            endpoint: config,
+        }
     }
 
     pub async fn client(&self) -> Result<ClusterClient, armonik::client::ConnectionError> {

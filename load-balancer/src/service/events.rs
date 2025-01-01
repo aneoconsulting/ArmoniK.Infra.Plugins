@@ -45,11 +45,11 @@ impl EventsService for Service {
                 .await
                 .map_err(IntoStatus::into_status)?;
 
-            let stream = async_stream::try_stream! {
+            let stream = async_stream::stream! {
                 let mut stream = std::pin::pin!(stream);
 
                 while let Some(Some(event)) = cancellation_token.run_until_cancelled(stream.next()).await {
-                    yield event.map_err(IntoStatus::into_status)?;
+                    yield event.map_err(IntoStatus::into_status);
                 }
             };
 

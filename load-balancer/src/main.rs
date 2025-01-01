@@ -164,10 +164,11 @@ async fn main() -> Result<(), eyre::Report> {
 
     for (name, cluster_config) in conf.clusters {
         clusters.insert(
-            name,
-            cluster::Cluster::new(armonik::ClientConfig::from_config_args(
-                cluster_config.into(),
-            )?),
+            name.clone(),
+            cluster::Cluster::new(
+                name,
+                armonik::ClientConfig::from_config_args(cluster_config.into())?,
+            ),
         );
     }
 

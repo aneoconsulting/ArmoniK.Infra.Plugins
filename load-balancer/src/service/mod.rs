@@ -10,7 +10,11 @@ use tokio_rusqlite::Connection;
 
 use armonik::reexports::{tokio::sync::RwLock, tokio_stream::StreamExt, tonic::Status};
 
-use crate::{async_pool::AsyncPool, cluster::Cluster, utils::IntoStatus};
+use crate::{
+    async_pool::AsyncPool,
+    cluster::Cluster,
+    utils::{merge_streams, IntoStatus},
+};
 
 mod applications;
 mod auth;
@@ -156,7 +160,7 @@ impl Service {
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
         let mut missing_ids: HashSet<_> = session_ids.iter().copied().map(String::from).collect();
 
-        let (mapping, missing_ids) = self.db.call(move |conn| {
+        let (mapping, mut missing_ids) = self.db.call(move |conn| {
             let mut mapping = HashMap::<String, Vec<String>>::new();
 
             let mut stmt = conn.prepare_cached("SELECT session_id, cluster FROM session WHERE session_id IN (SELECT e.value FROM json_each(?) e)")?;
@@ -183,7 +187,7 @@ impl Service {
 
         if !missing_ids.is_empty() {
             let filter = missing_ids
-                .into_iter()
+                .iter()
                 .map(|session_id| {
                     [armonik::sessions::filter::Field {
                         field: armonik::sessions::Field::Raw(
@@ -191,7 +195,7 @@ impl Service {
                         ),
                         condition: armonik::sessions::filter::Condition::String(
                             armonik::FilterString {
-                                value: session_id,
+                                value: session_id.clone(),
                                 operator: armonik::FilterStringOperator::Equal,
                             },
                         ),
@@ -199,32 +203,63 @@ impl Service {
                 })
                 .collect::<Vec<_>>();
 
-            for (cluster_name, cluster) in &self.clusters {
-                let cluster_name = cluster_name.clone();
-                let sessions = cluster
-                    .client()
-                    .await
-                    .map_err(IntoStatus::into_status)?
-                    .sessions()
-                    .list(
-                        filter.clone(),
-                        Default::default(),
-                        true,
-                        0,
-                        filter.len() as i32,
-                    )
-                    .await
-                    .map_err(IntoStatus::into_status)?
-                    .sessions;
+            let mut list_all = self
+                .clusters
+                .values()
+                .map(|cluster| async {
+                    let client = match cluster.client().await {
+                        Ok(client) => client,
+                        Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
+                    };
+                    let response = match client
+                        .sessions()
+                        .list(
+                            filter.clone(),
+                            Default::default(),
+                            true,
+                            0,
+                            filter.len() as i32,
+                        )
+                        .await
+                    {
+                        Ok(response) => response,
+                        Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
+                    };
+                    (cluster.clone(), Ok(response.sessions))
+                })
+                .collect::<futures::stream::FuturesUnordered<_>>();
 
-                if !sessions.is_empty() {
-                    let cluster_mapping = mapping.entry(cluster.clone()).or_default();
-                    for session in &sessions {
-                        cluster_mapping.push(session.session_id.clone());
+            let mut errors = Vec::new();
+            while let Some((cluster, list)) = list_all.next().await {
+                match list {
+                    Ok(sessions) => {
+                        if !sessions.is_empty() {
+                            let cluster_mapping = mapping.entry(cluster.clone()).or_default();
+                            for session in &sessions {
+                                missing_ids.remove(&session.session_id);
+                                cluster_mapping.push(session.session_id.clone());
+                            }
+
+                            self.add_sessions(sessions, cluster.name.clone()).await?;
+                        }
                     }
-
-                    self.add_sessions(sessions, cluster_name).await?;
+                    Err(err) => {
+                        errors.push((cluster, err));
+                    }
                 }
+            }
+
+            if !missing_ids.is_empty() {
+                let mut message = String::new();
+                let mut sep = "";
+                for (cluster, error) in errors {
+                    let cluster_name = &cluster.name;
+                    message.push_str(&format!(
+                        "{sep}Error while fetching sessions from cluster {cluster_name}: {error}"
+                    ));
+                    sep = "\n";
+                }
+                return Err(Status::unavailable(message));
             }
         }
 
@@ -244,7 +279,7 @@ impl Service {
         &'a self,
         result_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
-        let mut missing_ids = Vec::new();
+        let mut missing_ids = HashSet::new();
         let mut mapping = HashMap::<Arc<Cluster>, Vec<String>>::new();
 
         {
@@ -261,7 +296,7 @@ impl Service {
                         }
                     }
                 } else {
-                    missing_ids.push(result_id);
+                    missing_ids.insert(result_id);
                 }
             }
         }
@@ -282,27 +317,59 @@ impl Service {
                 })
                 .collect::<Vec<_>>();
 
-            for cluster in self.clusters.values() {
-                let results = cluster
-                    .client()
-                    .await
-                    .map_err(IntoStatus::into_status)?
-                    .results()
-                    .list(filter.clone(), Default::default(), 0, filter.len() as i32)
-                    .await
-                    .map_err(IntoStatus::into_status)?
-                    .results;
+            let mut list_all = self
+                .clusters
+                .values()
+                .map(|cluster| async {
+                    let client = match cluster.client().await {
+                        Ok(client) => client,
+                        Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
+                    };
+                    let response = match client
+                        .results()
+                        .list(filter.clone(), Default::default(), 0, filter.len() as i32)
+                        .await
+                    {
+                        Ok(response) => response,
+                        Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
+                    };
+                    (cluster.clone(), Ok(response.results))
+                })
+                .collect::<futures::stream::FuturesUnordered<_>>();
 
-                if !results.is_empty() {
-                    let cluster_mapping = mapping.entry(cluster.clone()).or_default();
-                    let mut guard = self.mapping_result.write().await;
-                    for result in results {
-                        guard
-                            .entry(result.result_id.clone())
-                            .or_insert_with(|| cluster.clone());
-                        cluster_mapping.push(result.result_id);
+            let mut errors = Vec::new();
+            while let Some((cluster, list)) = list_all.next().await {
+                match list {
+                    Ok(results) => {
+                        if !results.is_empty() {
+                            let cluster_mapping = mapping.entry(cluster.clone()).or_default();
+                            let mut guard = self.mapping_result.write().await;
+                            for result in &results {
+                                missing_ids.remove(result.result_id.as_str());
+                                cluster_mapping.push(result.result_id.clone());
+                                guard
+                                    .entry(result.result_id.clone())
+                                    .or_insert_with(|| cluster.clone());
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        errors.push((cluster, err));
                     }
                 }
+            }
+
+            if !missing_ids.is_empty() {
+                let mut message = String::new();
+                let mut sep = "";
+                for (cluster, error) in errors {
+                    let cluster_name = &cluster.name;
+                    message.push_str(&format!(
+                        "{sep}Error while fetching results from cluster {cluster_name}: {error}"
+                    ));
+                    sep = "\n";
+                }
+                return Err(Status::unavailable(message));
             }
         }
 
@@ -322,7 +389,7 @@ impl Service {
         &'a self,
         task_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
-        let mut missing_ids = Vec::new();
+        let mut missing_ids = HashSet::new();
         let mut mapping = HashMap::<Arc<Cluster>, Vec<String>>::new();
 
         {
@@ -339,7 +406,7 @@ impl Service {
                         }
                     }
                 } else {
-                    missing_ids.push(task_id);
+                    missing_ids.insert(task_id);
                 }
             }
         }
@@ -360,33 +427,65 @@ impl Service {
                 })
                 .collect::<Vec<_>>();
 
-            for cluster in self.clusters.values() {
-                let tasks = cluster
-                    .client()
-                    .await
-                    .map_err(IntoStatus::into_status)?
-                    .tasks()
-                    .list(
-                        filter.clone(),
-                        Default::default(),
-                        false,
-                        0,
-                        filter.len() as i32,
-                    )
-                    .await
-                    .map_err(IntoStatus::into_status)?
-                    .tasks;
+            let mut list_all = self
+                .clusters
+                .values()
+                .map(|cluster| async {
+                    let client = match cluster.client().await {
+                        Ok(client) => client,
+                        Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
+                    };
+                    let response = match client
+                        .tasks()
+                        .list(
+                            filter.clone(),
+                            Default::default(),
+                            false,
+                            0,
+                            filter.len() as i32,
+                        )
+                        .await
+                    {
+                        Ok(response) => response,
+                        Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
+                    };
+                    (cluster.clone(), Ok(response.tasks))
+                })
+                .collect::<futures::stream::FuturesUnordered<_>>();
 
-                if !tasks.is_empty() {
-                    let cluster_mapping = mapping.entry(cluster.clone()).or_default();
-                    let mut guard = self.mapping_task.write().await;
-                    for task in tasks {
-                        guard
-                            .entry(task.task_id.clone())
-                            .or_insert_with(|| cluster.clone());
-                        cluster_mapping.push(task.task_id);
+            let mut errors = Vec::new();
+            while let Some((cluster, list)) = list_all.next().await {
+                match list {
+                    Ok(tasks) => {
+                        if !tasks.is_empty() {
+                            let cluster_mapping = mapping.entry(cluster.clone()).or_default();
+                            let mut guard = self.mapping_task.write().await;
+                            for task in &tasks {
+                                missing_ids.remove(task.task_id.as_str());
+                                cluster_mapping.push(task.task_id.clone());
+                                guard
+                                    .entry(task.task_id.clone())
+                                    .or_insert_with(|| cluster.clone());
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        errors.push((cluster, err));
                     }
                 }
+            }
+
+            if !missing_ids.is_empty() {
+                let mut message = String::new();
+                let mut sep = "";
+                for (cluster, error) in errors {
+                    let cluster_name = &cluster.name;
+                    message.push_str(&format!(
+                        "{sep}Error while fetching tasks from cluster {cluster_name}: {error}"
+                    ));
+                    sep = "\n";
+                }
+                return Err(Status::unavailable(message));
             }
         }
 
@@ -403,19 +502,57 @@ impl Service {
     }
 
     pub async fn update_sessions(&self) -> Result<(), Status> {
-        for (name, cluster) in &self.clusters {
-            log::debug!("Refreshing sessions from {}\n  {:?}", name, cluster);
-            let mut stream = std::pin::pin!(
-                cluster
-                    .client()
-                    .await
-                    .map_err(IntoStatus::into_status)?
+        let streams = self.clusters.values().map(|cluster| {
+            Box::pin(async_stream::stream! {
+                let client = match cluster.client().await.map_err(IntoStatus::into_status) {
+                    Ok(client) => client,
+                    Err(err) => {
+                        yield (cluster.clone(), Err(err));
+                        return;
+                    }
+                };
+                let stream = match client
                     .get_all_sessions(Default::default(), Default::default())
-                    .await?
-            );
+                    .await
+                {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        yield (cluster.clone(), Err(err));
+                        return;
+                    }
+                };
+                let mut stream = std::pin::pin!(stream);
 
-            while let Some(chunk) = stream.try_next().await? {
-                self.add_sessions(chunk, name.clone()).await?;
+                while let Some(response) = stream.next().await {
+                    match response {
+                        Ok(response) => yield (cluster.clone(), Result::<_, Status>::Ok(response)),
+                        Err(err) => {
+                            yield (cluster.clone(), Err(err));
+                            return;
+                        }
+                    }
+                }
+            })
+        });
+
+        let mut streams = std::pin::pin!(merge_streams(streams));
+
+        while let Some((cluster, response)) = streams.next().await {
+            match response {
+                Ok(chunk) => {
+                    if let Err(err) = self.add_sessions(chunk, cluster.name.clone()).await {
+                        log::error!(
+                            "Could not record sessions from cluster {}: {}",
+                            cluster.name,
+                            err
+                        )
+                    }
+                }
+                Err(err) => log::error!(
+                    "Could not fetch sessions from cluster {}: {}",
+                    cluster.name,
+                    err
+                ),
             }
         }
 

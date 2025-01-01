@@ -6,7 +6,7 @@ use armonik::{
     server::PartitionsService,
 };
 
-use crate::utils::{run_with_cancellation, IntoStatus};
+use crate::utils::{merge_streams, run_with_cancellation, IntoStatus};
 
 use super::Service;
 
@@ -30,16 +30,26 @@ impl PartitionsService for Service {
         run_with_cancellation! {
             use cancellation_token;
 
-            for cluster in self.clusters.values() {
-                let client = cluster.client().await
-                    .map_err(IntoStatus::into_status)?;
-                let stream =
-                     client.get_all_partitions(request.filters.clone(), request.sort.clone()).await?;
+            let streams = self.clusters.values().map(|cluster| {
+                let request = request.clone();
+                Box::pin(async_stream::stream! {
+                    let stream = cluster
+                        .client()
+                        .await
+                        .map_err(IntoStatus::into_status)?
+                        .get_all_partitions(request.filters.clone(), request.sort.clone())
+                        .await?;
+                    let mut stream = std::pin::pin!(stream);
 
-                let mut stream = std::pin::pin!(stream);
-                while let Some(chunk) = stream.try_next().await? {
-                    partitions.extend(chunk);
-                }
+                    while let Some(item) = stream.next().await {
+                        yield item;
+                    }
+                })
+            });
+            let mut streams = std::pin::pin!(merge_streams(streams));
+
+            while let Some(chunk) = streams.try_next().await? {
+                partitions.extend(chunk);
             }
 
             match &request.sort.field {
