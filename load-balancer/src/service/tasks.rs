@@ -1,10 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
 use armonik::{
-    reexports::{tokio_util, tonic},
+    reexports::{tokio_stream::StreamExt, tokio_util, tonic},
     server::TasksService,
     tasks,
 };
+use futures::stream::FuturesUnordered;
 
 use crate::utils::{run_with_cancellation, IntoStatus};
 
@@ -167,20 +168,27 @@ impl TasksService for Service {
         run_with_cancellation! {
             use cancellation_token;
 
+            let mut futures = self
+                .clusters
+                .values()
+                .map(|cluster| async {
+                    Result::<_, tonic::Status>::Ok(
+                        cluster
+                            .client()
+                            .await
+                            .map_err(IntoStatus::into_status)?
+                            .tasks()
+                            .call(request.clone())
+                            .await
+                            .map_err(IntoStatus::into_status)?
+                            .tasks,
+                    )
+                })
+                .collect::<FuturesUnordered<_>>();
+
             let mut tasks = Vec::new();
-            for cluster in self.clusters.values() {
-                tasks.extend(
-                    cluster
-                        .client()
-                        .await
-                        .map_err(IntoStatus::into_status)?
-                        .tasks()
-                        .call(request.clone())
-                        .await
-                        .map_err(IntoStatus::into_status)?
-                        .tasks
-                        .into_iter(),
-                );
+            while let Some(chunk) = futures.try_next().await? {
+                tasks.extend(chunk.into_iter())
             }
 
             Ok(tasks::cancel::Response { tasks })
@@ -195,18 +203,27 @@ impl TasksService for Service {
         run_with_cancellation! {
             use cancellation_token;
 
-            let mut task_results = HashMap::<String, Vec<String>>::new();
-            for cluster in self.clusters.values() {
-                let response = cluster
-                    .client()
-                    .await
-                    .map_err(IntoStatus::into_status)?
-                    .tasks()
-                    .call(request.clone())
-                    .await
-                    .map_err(IntoStatus::into_status)?;
+            let mut futures = self
+                .clusters
+                .values()
+                .map(|cluster| async {
+                    Result::<_, tonic::Status>::Ok(
+                        cluster
+                            .client()
+                            .await
+                            .map_err(IntoStatus::into_status)?
+                            .tasks()
+                            .call(request.clone())
+                            .await
+                            .map_err(IntoStatus::into_status)?
+                            .task_results,
+                    )
+                })
+                .collect::<FuturesUnordered<_>>();
 
-                for (task_id, result_ids) in response.task_results {
+            let mut task_results = HashMap::<String, Vec<String>>::new();
+            while let Some(response) = futures.try_next().await? {
+                for (task_id, result_ids) in response {
                     task_results.entry(task_id).or_default().extend(result_ids);
                 }
             }
@@ -223,19 +240,26 @@ impl TasksService for Service {
         run_with_cancellation! {
             use cancellation_token;
 
+            let mut futures = self
+                .clusters
+                .values()
+                .map(|cluster| async {
+                    Result::<_, tonic::Status>::Ok(
+                        cluster
+                            .client()
+                            .await
+                            .map_err(IntoStatus::into_status)?
+                            .tasks()
+                            .call(request.clone())
+                            .await
+                            .map_err(IntoStatus::into_status)?
+                            .status,
+                    )
+                })
+                .collect::<FuturesUnordered<_>>();
+
             let mut status = HashMap::<armonik::TaskStatus, i32>::new();
-
-            for cluster in self.clusters.values() {
-                let response = cluster
-                    .client()
-                    .await
-                    .map_err(IntoStatus::into_status)?
-                    .tasks()
-                    .call(request.clone())
-                    .await
-                    .map_err(IntoStatus::into_status)?
-                    .status;
-
+            while let Some(response) = futures.try_next().await? {
                 for count in response {
                     *status.entry(count.status).or_default() += count.count;
                 }
