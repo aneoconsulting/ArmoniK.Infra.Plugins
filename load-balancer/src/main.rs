@@ -4,6 +4,7 @@ use armonik::reexports::tonic;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
+use tracing as _;
 
 pub mod async_pool;
 pub mod cluster;

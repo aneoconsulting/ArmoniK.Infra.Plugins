@@ -154,8 +154,8 @@ impl Service {
             .map_err(IntoStatus::into_status)
     }
 
-    pub async fn get_cluster_from_sessions<'a>(
-        &'a self,
+    pub async fn get_cluster_from_sessions(
+        &self,
         session_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
         let mut missing_ids: HashSet<_> = session_ids.iter().copied().map(String::from).collect();
@@ -275,8 +275,8 @@ impl Service {
         Ok(sessions.into_keys().next())
     }
 
-    pub async fn get_cluster_from_results<'a>(
-        &'a self,
+    pub async fn get_cluster_from_results(
+        &self,
         result_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
         let mut missing_ids = HashSet::new();
@@ -385,8 +385,8 @@ impl Service {
         Ok(results.into_keys().next())
     }
 
-    pub async fn get_cluster_from_tasks<'a>(
-        &'a self,
+    pub async fn get_cluster_from_tasks(
+        &self,
         task_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
         let mut missing_ids = HashSet::new();
