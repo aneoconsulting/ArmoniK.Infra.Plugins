@@ -140,7 +140,10 @@ async fn wait_terminate() {
 
 #[tokio::main]
 async fn main() -> Result<(), eyre::Report> {
-    env_logger::init();
+    env_logger::builder()
+        .filter_module("tracing", log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
 
     let cli = Cli::parse();
 

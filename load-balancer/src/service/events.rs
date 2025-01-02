@@ -31,16 +31,18 @@ impl EventsService for Service {
                 returned_events,
             } = request;
 
-            let client = self
+            let mut client = self
                 .get_cluster_from_session(&session_id)
                 .await?
-                .ok_or_else(|| tonic::Status::not_found(format!("Session {} was not found", session_id)))?
+                .ok_or_else(|| {
+                    tonic::Status::not_found(format!("Session {} was not found", session_id))
+                })?
                 .client()
                 .await
-                .map_err(IntoStatus::into_status)?;
+                .map_err(IntoStatus::into_status)?
+                .events();
 
             let stream = client
-                .events()
                 .subscribe(session_id, task_filters, result_filters, returned_events)
                 .await
                 .map_err(IntoStatus::into_status)?;

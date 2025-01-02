@@ -1,11 +1,27 @@
-use std::{hash::Hash, ops::Deref};
+use std::{hash::Hash, ops::Deref, sync::Arc};
 
 use armonik::reexports::{tokio_stream, tonic};
+use lockfree_object_pool::LinearReusable;
 
-#[derive(Debug, Default, Clone)]
+use crate::{
+    async_pool::{AsyncPool, PoolAwaitable},
+    ref_guard::RefGuard,
+};
+
+#[derive(Clone)]
 pub struct Cluster {
     pub name: String,
     pub endpoint: armonik::ClientConfig,
+    pub pool: Arc<AsyncPool<Option<armonik::Client>>>,
+}
+
+impl std::fmt::Debug for Cluster {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cluster")
+            .field("name", &self.name)
+            .field("endpoint", &self.endpoint)
+            .finish()
+    }
 }
 
 impl PartialEq for Cluster {
@@ -35,19 +51,49 @@ impl Cluster {
         Self {
             name,
             endpoint: config,
+            pool: Arc::new(AsyncPool::new(|| async { None })),
         }
     }
 
     pub async fn client(&self) -> Result<ClusterClient, armonik::client::ConnectionError> {
-        Ok(ClusterClient(
-            armonik::Client::with_config(self.endpoint.clone()).await?,
-        ))
+        let client = self
+            .pool
+            .pull()
+            .await
+            .map_async(|reference| async move {
+                match reference {
+                    Some(x) => Ok(x),
+                    None => {
+                        log::debug!(
+                            "Creating new client for cluster {}: {:?}",
+                            self.name,
+                            self.endpoint
+                        );
+
+                        let endpoint = self.endpoint.clone();
+
+                        // Somehow, armonik::Client::with_config() is not Send
+                        // So we starting a blocking executor that blocks on the future to ensure it stays on the same thread
+                        tokio::task::spawn_blocking(move || {
+                            futures::executor::block_on(armonik::Client::with_config(endpoint))
+                        })
+                        .await
+                        .unwrap()
+                        .map(|client| reference.insert(client))
+                    }
+                }
+            })
+            .await
+            .into_result()?;
+        Ok(ClusterClient(client))
     }
 }
 
-pub struct ClusterClient(armonik::Client);
+pub struct ClusterClient<'a>(
+    RefGuard<LinearReusable<'a, PoolAwaitable<Option<armonik::Client>>>, &'a mut armonik::Client>,
+);
 
-impl Deref for ClusterClient {
+impl Deref for ClusterClient<'_> {
     type Target = armonik::Client;
 
     fn deref(&self) -> &Self::Target {
@@ -55,13 +101,13 @@ impl Deref for ClusterClient {
     }
 }
 
-impl AsRef<armonik::Client> for ClusterClient {
+impl AsRef<armonik::Client> for ClusterClient<'_> {
     fn as_ref(&self) -> &armonik::Client {
         &self.0
     }
 }
 
-impl ClusterClient {
+impl ClusterClient<'_> {
     pub async fn get_all_sessions(
         &self,
         filters: armonik::sessions::filter::Or,
@@ -84,8 +130,7 @@ impl ClusterClient {
                         page_index,
                         page_size,
                     )
-                    .await
-                    .map_err(crate::utils::IntoStatus::into_status)?;
+                    .await.unwrap();
 
                 if page.sessions.is_empty() {
                     break;

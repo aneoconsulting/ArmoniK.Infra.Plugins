@@ -27,7 +27,8 @@ impl TasksService for Service {
 
                 for field in and {
                     if let armonik::tasks::filter::Field {
-                        field: armonik::tasks::Field::Summary(armonik::tasks::SummaryField::SessionId),
+                        field:
+                            armonik::tasks::Field::Summary(armonik::tasks::SummaryField::SessionId),
                         condition:
                             armonik::tasks::filter::Condition::String(armonik::FilterString {
                                 value,
@@ -65,20 +66,15 @@ impl TasksService for Service {
                 ));
             }
 
-            match cluster
+            let mut client = cluster
                 .client()
                 .await
                 .map_err(IntoStatus::into_status)?
-                .tasks()
-                .call(request)
-                .await
-            {
-                Ok(response) => Ok(response),
-                Err(err) => match err {
-                    armonik::client::RequestError::Grpc { source, .. } => Err(*source),
-                    err => Err(tonic::Status::internal(err.to_string())),
-                },
-            }
+                .tasks();
+            client.call(request).await.map_err(|err| match err {
+                armonik::client::RequestError::Grpc { source, .. } => *source,
+                err => tonic::Status::internal(err.to_string()),
+            })
         }
     }
 
@@ -97,7 +93,8 @@ impl TasksService for Service {
 
                 for field in and {
                     if let armonik::tasks::filter::Field {
-                        field: armonik::tasks::Field::Summary(armonik::tasks::SummaryField::SessionId),
+                        field:
+                            armonik::tasks::Field::Summary(armonik::tasks::SummaryField::SessionId),
                         condition:
                             armonik::tasks::filter::Condition::String(armonik::FilterString {
                                 value,
@@ -135,20 +132,15 @@ impl TasksService for Service {
                 ));
             }
 
-            match cluster
+            let mut client = cluster
                 .client()
                 .await
                 .map_err(IntoStatus::into_status)?
-                .tasks()
-                .call(request)
-                .await
-            {
-                Ok(response) => Ok(response),
-                Err(err) => match err {
-                    armonik::client::RequestError::Grpc { source, .. } => Err(*source),
-                    err => Err(tonic::Status::internal(err.to_string())),
-                },
-            }
+                .tasks();
+            client.call(request).await.map_err(|err| match err {
+                armonik::client::RequestError::Grpc { source, .. } => *source,
+                err => tonic::Status::internal(err.to_string()),
+            })
         }
     }
 

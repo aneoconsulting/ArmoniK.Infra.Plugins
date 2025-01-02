@@ -63,8 +63,7 @@ impl ResultsService for Service {
                 self.get_cluster_from_results(&requested_results)
             );
 
-            let (mut sessions, mut results) =
-                (sessions?.into_iter(), results?.into_iter());
+            let (mut sessions, mut results) = (sessions?.into_iter(), results?.into_iter());
 
             let cluster = match (sessions.next(), results.next()) {
                 (None, None) => {
@@ -95,20 +94,15 @@ impl ResultsService for Service {
                 }
             }
 
-            match cluster
+            let mut client = cluster
                 .client()
                 .await
                 .map_err(IntoStatus::into_status)?
-                .results()
-                .call(request)
-                .await
-            {
-                Ok(response) => Ok(response),
-                Err(err) => match err {
-                    armonik::client::RequestError::Grpc { source, .. } => Err(*source),
-                    err => Err(tonic::Status::internal(err.to_string())),
-                },
-            }
+                .results();
+            client.call(request).await.map_err(|err| match err {
+                armonik::client::RequestError::Grpc { source, .. } => *source,
+                err => tonic::Status::internal(err.to_string()),
+            })
         }
     }
 

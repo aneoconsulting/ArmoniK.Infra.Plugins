@@ -38,12 +38,12 @@ macro_rules! impl_unary {
                 )));
             };
 
-            cluster
+            let mut client = cluster
                 .client()
                 .await
                 .map_err(crate::utils::IntoStatus::into_status)?
-                .$service()
-                .call($request)
+                .$service();
+            client.call($request)
                 .await
                 .map_err(crate::utils::IntoStatus::into_status)
         }
