@@ -1,4 +1,8 @@
-use std::{hash::Hash, ops::Deref, sync::Arc};
+use std::{
+    hash::Hash,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
 use armonik::reexports::{tokio_stream, tonic};
 use lockfree_object_pool::LinearReusable;
@@ -56,6 +60,7 @@ impl Cluster {
     }
 
     pub async fn client(&self) -> Result<ClusterClient, armonik::client::ConnectionError> {
+        let span = tracing::debug_span!("Cluster", name = self.name);
         let client = self
             .pool
             .pull()
@@ -64,7 +69,7 @@ impl Cluster {
                 match reference {
                     Some(x) => Ok(x),
                     None => {
-                        log::debug!(
+                        tracing::debug!(
                             "Creating new client for cluster {}: {:?}",
                             self.name,
                             self.endpoint
@@ -85,19 +90,27 @@ impl Cluster {
             })
             .await
             .into_result()?;
-        Ok(ClusterClient(client))
+        Ok(ClusterClient(client, span))
     }
 }
 
 pub struct ClusterClient<'a>(
     RefGuard<LinearReusable<'a, PoolAwaitable<Option<armonik::Client>>>, &'a mut armonik::Client>,
+    tracing::Span,
 );
+
+unsafe impl Send for ClusterClient<'_> {}
 
 impl Deref for ClusterClient<'_> {
     type Target = armonik::Client;
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+impl DerefMut for ClusterClient<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
@@ -108,108 +121,120 @@ impl AsRef<armonik::Client> for ClusterClient<'_> {
 }
 
 impl ClusterClient<'_> {
+    pub fn span(&self) -> tracing::Span {
+        self.1.clone()
+    }
     pub async fn get_all_sessions(
-        &self,
+        &mut self,
         filters: armonik::sessions::filter::Or,
         sort: armonik::sessions::Sort,
     ) -> Result<
-        impl tokio_stream::Stream<Item = Result<Vec<armonik::sessions::Raw>, tonic::Status>>,
+        impl tokio_stream::Stream<Item = Result<Vec<armonik::sessions::Raw>, tonic::Status>> + '_,
         tonic::Status,
     > {
         let mut client = self.sessions();
         let page_size = 1000;
         let mut page_index = 0;
 
-        Ok(async_stream::try_stream! {
-            loop {
-                let page = client
-                    .list(
-                        filters.clone(),
-                        sort.clone(),
-                        true,
-                        page_index,
-                        page_size,
-                    )
-                    .await.unwrap();
+        Ok(armonik::reexports::tracing_futures::Instrument::instrument(
+            async_stream::try_stream! {
+                loop {
+                    let page = client
+                        .list(
+                            filters.clone(),
+                            sort.clone(),
+                            true,
+                            page_index,
+                            page_size,
+                        )
+                        .await.unwrap();
 
-                if page.sessions.is_empty() {
-                    break;
+                    if page.sessions.is_empty() {
+                        break;
+                    }
+
+                    page_index += 1;
+
+                    yield page.sessions;
                 }
-
-                page_index += 1;
-
-                yield page.sessions;
-            }
-        })
+            },
+            tracing::trace_span!("get_all_sessions"),
+        ))
     }
 
     pub async fn get_all_partitions(
-        &self,
+        &mut self,
         filters: armonik::partitions::filter::Or,
         sort: armonik::partitions::Sort,
     ) -> Result<
-        impl tokio_stream::Stream<Item = Result<Vec<armonik::partitions::Raw>, tonic::Status>>,
+        impl tokio_stream::Stream<Item = Result<Vec<armonik::partitions::Raw>, tonic::Status>> + '_,
         tonic::Status,
     > {
         let mut client = self.partitions();
         let page_size = 1000;
         let mut page_index = 0;
 
-        Ok(async_stream::try_stream! {
-            loop {
-                let page = client
-                    .list(
-                        filters.clone(),
-                        sort.clone(),
-                        page_index,
-                        page_size,
-                    )
-                    .await
-                    .map_err(crate::utils::IntoStatus::into_status)?;
+        Ok(armonik::reexports::tracing_futures::Instrument::instrument(
+            async_stream::try_stream! {
+                loop {
+                    let page = client
+                        .list(
+                            filters.clone(),
+                            sort.clone(),
+                            page_index,
+                            page_size,
+                        )
+                        .await
+                        .map_err(crate::utils::IntoStatus::into_status)?;
 
-                if page.partitions.is_empty() {
-                    break;
+                    if page.partitions.is_empty() {
+                        break;
+                    }
+
+                    page_index += 1;
+
+                    yield page.partitions;
                 }
-
-                page_index += 1;
-
-                yield page.partitions;
-            }
-        })
+            },
+            tracing::trace_span!("get_all_partitions"),
+        ))
     }
 
     pub async fn get_all_applications(
-        &self,
+        &mut self,
         filters: armonik::applications::filter::Or,
         sort: armonik::applications::Sort,
     ) -> Result<
-        impl tokio_stream::Stream<Item = Result<Vec<armonik::applications::Raw>, tonic::Status>>,
+        impl tokio_stream::Stream<Item = Result<Vec<armonik::applications::Raw>, tonic::Status>> + '_,
         tonic::Status,
     > {
         let mut client = self.applications();
         let page_size = 1000;
         let mut page_index = 0;
 
-        Ok(async_stream::try_stream! {
-            loop {
-                let page = client
-                    .list(
-                        filters.clone(),
-                        sort.clone(),
-                        page_index,
-                        page_size,
-                    )
-                    .await
-                    .map_err(crate::utils::IntoStatus::into_status)?;
+        Ok(armonik::reexports::tracing_futures::Instrument::instrument(
+            async_stream::try_stream! {
+                loop {
+                    let page = client
+                        .list(
+                            filters.clone(),
+                            sort.clone(),
+                            page_index,
+                            page_size,
+                        )
+                        .await
+                        .map_err(crate::utils::IntoStatus::into_status)?;
 
-                if page.applications.is_empty() {
-                    break;
+                    if page.applications.is_empty() {
+                        break;
+                    }
+
+                    page_index += 1;
+
+                    yield page.applications;
                 }
-
-                page_index += 1;
-
-                yield page.applications;
-            }
-        })
+            },
+            tracing::trace_span!("get_all_applications"),
+        ))
     }
 }

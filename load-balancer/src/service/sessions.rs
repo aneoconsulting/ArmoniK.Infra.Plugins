@@ -2,8 +2,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use armonik::{
     reexports::{
-        tokio_util,
         tonic::{self, Status},
+        tracing_futures::Instrument,
     },
     server::SessionsService,
     sessions,
@@ -11,7 +11,7 @@ use armonik::{
 use rusqlite::params_from_iter;
 use serde::{Deserialize, Serialize};
 
-use crate::utils::{impl_unary, run_with_cancellation, IntoStatus};
+use crate::utils::{impl_unary, IntoStatus};
 
 use super::Service;
 
@@ -20,7 +20,6 @@ impl SessionsService for Service {
     async fn list(
         self: Arc<Self>,
         request: sessions::list::Request,
-        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> std::result::Result<sessions::list::Response, tonic::Status> {
         let Ok(page) = usize::try_from(request.page) else {
             return Err(tonic::Status::invalid_argument("Page should be positive"));
@@ -31,6 +30,7 @@ impl SessionsService for Service {
             ));
         };
 
+        let build_span = tracing::trace_span!("build");
         let mut params = Vec::<Box<dyn rusqlite::ToSql + Send + Sync + 'static>>::new();
         let mut query_suffix = String::new();
         let mut sep = " WHERE (";
@@ -228,16 +228,25 @@ impl SessionsService for Service {
             page * page_size
         );
         let query_count = format!("SELECT COUNT(*) FROM session{query_suffix}");
+        std::mem::drop(build_span);
 
-        let (sessions, total) = run_with_cancellation!(
-            cancellation_token,
-            self.db.call(move |conn| {
+        let (sessions, total) = self
+            .db
+            .call(tracing::trace_span!("transaction"), move |conn| {
                 let mut sessions = Vec::<armonik::sessions::Raw>::new();
                 let transaction = conn.transaction()?;
+
+                let count_span = tracing::trace_span!("count");
                 let total =
                     transaction
                         .query_row(&query_count, params_from_iter(&params), |row| row.get(0))?;
+                std::mem::drop(count_span);
+
+                let prepare_span = tracing::trace_span!("prepare");
                 let mut stmt = transaction.prepare(&query)?;
+                std::mem::drop(prepare_span);
+
+                let execute_span = tracing::trace_span!("execute");
                 let mut rows = stmt.query(params_from_iter(&params))?;
 
                 while let Some(row) = rows.next()? {
@@ -253,13 +262,15 @@ impl SessionsService for Service {
                         }
                     };
                 }
+                std::mem::drop(execute_span);
                 std::mem::drop(rows);
                 std::mem::drop(stmt);
+
                 transaction.commit()?;
                 Result::<_, rusqlite::Error>::Ok((sessions, total))
             })
-        )
-        .map_err(IntoStatus::into_status)?;
+            .await
+            .map_err(IntoStatus::into_status)?;
 
         Ok(armonik::sessions::list::Response {
             sessions,
@@ -272,23 +283,20 @@ impl SessionsService for Service {
     async fn get(
         self: Arc<Self>,
         request: sessions::get::Request,
-        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> std::result::Result<sessions::get::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, cancellation_token, session)
+        impl_unary!(self.sessions, request, session)
     }
 
     async fn cancel(
         self: Arc<Self>,
         request: sessions::cancel::Request,
-        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> std::result::Result<sessions::cancel::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, cancellation_token, session)
+        impl_unary!(self.sessions, request, session)
     }
 
     async fn create(
         self: Arc<Self>,
         request: sessions::create::Request,
-        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> std::result::Result<sessions::create::Response, tonic::Status> {
         let n = self.clusters.len();
         let i = self
@@ -298,12 +306,14 @@ impl SessionsService for Service {
         let mut err = None;
 
         for (cluster_name, cluster) in self.clusters.iter().cycle().skip(i % n).take(n) {
-            match run_with_cancellation!(cancellation_token, cluster.client()) {
-                Ok(client) => {
-                    let response = run_with_cancellation!(
-                        cancellation_token,
-                        client.sessions().call(request.clone())
-                    );
+            match cluster.client().await {
+                Ok(mut client) => {
+                    let span = client.span();
+                    let response = client
+                        .sessions()
+                        .call(request.clone())
+                        .instrument(span)
+                        .await;
 
                     match response {
                         Ok(response) => {
@@ -345,51 +355,48 @@ impl SessionsService for Service {
     async fn pause(
         self: Arc<Self>,
         request: sessions::pause::Request,
-        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> std::result::Result<sessions::pause::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, cancellation_token, session)
+        impl_unary!(self.sessions, request, session)
     }
 
     async fn resume(
         self: Arc<Self>,
         request: sessions::resume::Request,
-        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> std::result::Result<sessions::resume::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, cancellation_token, session)
+        impl_unary!(self.sessions, request, session)
     }
 
     async fn close(
         self: Arc<Self>,
         request: sessions::close::Request,
-        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> std::result::Result<sessions::close::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, cancellation_token, session)
+        impl_unary!(self.sessions, request, session)
     }
 
     async fn purge(
         self: Arc<Self>,
         request: sessions::purge::Request,
-        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> std::result::Result<sessions::purge::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, cancellation_token, session)
+        impl_unary!(self.sessions, request, session)
     }
 
     async fn delete(
         self: Arc<Self>,
         request: sessions::delete::Request,
-        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> std::result::Result<sessions::delete::Response, tonic::Status> {
         let service = self.clone();
         let session_id = request.session_id.clone();
-        let response = impl_unary!(service.sessions, request, cancellation_token, session)?;
+        let response = impl_unary!(service.sessions, request, session)?;
 
         // If delete is successful, remove the session from the list
-        run_with_cancellation!(
-            cancellation_token,
-            self.db
-                .execute("DELETE FROM session WHERE session_id = ?", [session_id])
-        )
-        .map_err(IntoStatus::into_status)?;
+        self.db
+            .execute(
+                "DELETE FROM session WHERE session_id = ?",
+                [session_id],
+                tracing::trace_span!("delete"),
+            )
+            .await
+            .map_err(IntoStatus::into_status)?;
 
         Ok(response)
     }
@@ -397,9 +404,8 @@ impl SessionsService for Service {
     async fn stop_submission(
         self: Arc<Self>,
         request: sessions::stop_submission::Request,
-        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> std::result::Result<sessions::stop_submission::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, cancellation_token, session)
+        impl_unary!(self.sessions, request, session)
     }
 }
 

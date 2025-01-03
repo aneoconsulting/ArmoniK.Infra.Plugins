@@ -1,36 +1,20 @@
 use armonik::reexports::tonic::Status;
 
-macro_rules! run_with_cancellation {
-    (use $ct:expr; $($body:tt)*) => {
-        crate::utils::run_with_cancellation!($ct, async move { $($body)* })
-    };
-    ($ct:expr, $fut:expr) => {
-        match $ct.run_until_cancelled($fut).await {
-            Some(res) => res,
-            None => {
-                Err(tonic::Status::aborted("Cancellation token has been triggered"))?
-            }
-        }
-    }
-}
 use futures::{stream::futures_unordered, Stream, StreamExt};
-pub(crate) use run_with_cancellation;
 
 macro_rules! impl_unary {
-    ($self:ident.$service:ident, $request:ident, $ct:ident, session) => {
-        crate::utils::impl_unary!($self.$service, $request, $ct, {get_cluster_from_session, session_id, "Session {} was not found"})
+    ($self:ident.$service:ident, $request:ident, session) => {
+        crate::utils::impl_unary!($self.$service, $request, {get_cluster_from_session, session_id, "Session {} was not found"})
     };
-    ($self:ident.$service:ident, $request:ident, $ct:ident, result) => {
-        crate::utils::impl_unary!($self.$service, $request, $ct, {get_cluster_from_result, result_id, "Result {} was not found"})
+    ($self:ident.$service:ident, $request:ident, result) => {
+        crate::utils::impl_unary!($self.$service, $request, {get_cluster_from_result, result_id, "Result {} was not found"})
     };
-    ($self:ident.$service:ident, $request:ident, $ct:ident, task) => {
-        crate::utils::impl_unary!($self.$service, $request, $ct, {get_cluster_from_task, task_id, "Task {} was not found"})
+    ($self:ident.$service:ident, $request:ident, task) => {
+        crate::utils::impl_unary!($self.$service, $request, {get_cluster_from_task, task_id, "Task {} was not found"})
     };
 
-    ($self:ident.$service:ident, $request:ident, $ct:ident, {$get_cluster:ident, $id:ident, $msg:literal}) => {
-        crate::utils::run_with_cancellation! {
-            use $ct;
-
+    ($self:ident.$service:ident, $request:ident, {$get_cluster:ident, $id:ident, $msg:literal}) => {
+        {
             let Some(cluster) = $self.$get_cluster(&$request.$id).await? else {
                 return Err(tonic::Status::not_found(format!(
                     $msg,
@@ -41,9 +25,11 @@ macro_rules! impl_unary {
             let mut client = cluster
                 .client()
                 .await
-                .map_err(crate::utils::IntoStatus::into_status)?
-                .$service();
-            client.call($request)
+                .map_err(crate::utils::IntoStatus::into_status)?;
+            let span = client.span();
+            client.$service()
+                .call($request)
+                .instrument(span)
                 .await
                 .map_err(crate::utils::IntoStatus::into_status)
         }

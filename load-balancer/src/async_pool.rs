@@ -90,29 +90,36 @@ impl<T> AsyncPool<T> {
 }
 
 impl AsyncPool<Connection> {
-    pub async fn execute_batch(&self, sql: &str) -> Result<(), rusqlite::Error> {
+    pub async fn execute_batch(
+        &self,
+        sql: &str,
+        span: tracing::Span,
+    ) -> Result<(), rusqlite::Error> {
         let sql = sql.to_owned();
-        self.pull()
-            .await
-            .call_unwrap(move |conn| conn.execute_batch(&sql))
-            .await
+        self.call(span, move |conn| conn.execute_batch(&sql)).await
     }
     pub async fn execute(
         &self,
         sql: &str,
         params: impl Params + Send + 'static,
+        span: tracing::Span,
     ) -> Result<usize, rusqlite::Error> {
         let sql = sql.to_owned();
-        self.pull()
-            .await
-            .call_unwrap(move |conn| conn.execute(&sql, params))
+        self.call(span, move |conn| conn.execute(&sql, params))
             .await
     }
 
     pub async fn call<Out: Send + 'static>(
         &self,
+        span: tracing::Span,
         f: impl FnOnce(&mut rusqlite::Connection) -> Out + Send + 'static,
     ) -> Out {
-        self.pull().await.call_unwrap(f).await
+        self.pull()
+            .await
+            .call_unwrap(|conn| {
+                let _entered = span.entered();
+                f(conn)
+            })
+            .await
     }
 }

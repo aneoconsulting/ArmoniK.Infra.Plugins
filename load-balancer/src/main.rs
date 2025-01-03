@@ -3,8 +3,8 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use armonik::reexports::tonic;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use tower_http::trace::TraceLayer;
 use tracing as _;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 pub mod async_pool;
 pub mod cluster;
@@ -44,14 +44,14 @@ impl From<ClusterConfig> for armonik::client::ClientConfigArgs {
             override_target_name,
         }: ClusterConfig,
     ) -> Self {
-        armonik::client::ClientConfigArgs {
-            endpoint,
-            cert_pem,
-            key_pem,
-            ca_cert,
-            allow_unsafe_connection,
-            override_target_name,
-        }
+        let mut args = armonik::client::ClientConfigArgs::default();
+        args.endpoint = endpoint;
+        args.cert_pem = cert_pem;
+        args.key_pem = key_pem;
+        args.ca_cert = ca_cert;
+        args.allow_unsafe_connection = allow_unsafe_connection;
+        args.override_target_name = override_target_name;
+        args
     }
 }
 
@@ -84,7 +84,7 @@ async fn wait_terminate() {
     for sig in [SignalKind::terminate(), SignalKind::interrupt()] {
         match signal(sig) {
             Ok(sig) => signals.push(sig),
-            Err(err) => log::error!("Could not register signal handler: {err}"),
+            Err(err) => tracing::error!("Could not register signal handler: {err}"),
         }
     }
 
@@ -117,7 +117,7 @@ macro_rules! win_signal {
                             return;
                         }
                     }
-                    Err(err) => log::error!(
+                    Err(err) => tracing::error!(
                         "Could not register signal handler for {}: {err}",
                         stringify!($sig),
                     ),
@@ -141,9 +141,12 @@ async fn wait_terminate() {
 
 #[tokio::main]
 async fn main() -> Result<(), eyre::Report> {
-    env_logger::builder()
-        .filter_module("tracing", log::LevelFilter::Info)
-        .parse_default_env()
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_span_events(
+            tracing_subscriber::fmt::format::FmtSpan::NEW
+                | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
+        ))
+        .with(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     let cli = Cli::parse();
@@ -180,7 +183,9 @@ async fn main() -> Result<(), eyre::Report> {
     let refresh_delay = std::time::Duration::from_secs_f64(conf.refresh_delay.parse()?);
 
     let router = tonic::transport::Server::builder()
-        .layer(TraceLayer::new_for_grpc())
+        .trace_fn(|r| tracing::info_span!("gRPC", "path" = r.uri().path()))
+        .concurrency_limit_per_connection(1024)
+        .http2_max_pending_accept_reset_streams(Some(2048))
         .add_service(
             armonik::api::v3::applications::applications_server::ApplicationsServer::from_arc(
                 service.clone(),
@@ -230,7 +235,7 @@ async fn main() -> Result<(), eyre::Report> {
             loop {
                 timer.tick().await;
                 if let Err(err) = service.update_sessions().await {
-                    log::error!("Error while fetching sessions from clusters:\n{err:?}");
+                    tracing::error!("Error while fetching sessions from clusters:\n{err:?}");
                 }
             }
         }
@@ -239,27 +244,27 @@ async fn main() -> Result<(), eyre::Report> {
     let mut service_future =
         tokio::spawn(router.serve(SocketAddr::new(conf.listen_ip.parse()?, conf.listen_port)));
 
-    log::info!("Application running");
+    tracing::info!("Application running");
 
     tokio::select! {
         output = &mut background_future => {
             if let Err(err) = output {
-                log::error!("Background future had an error: {err:?}");
+                tracing::error!("Background future had an error: {err:?}");
             }
         }
         output = &mut service_future => {
             match output {
                 Ok(Ok(())) => (),
                 Ok(Err(err)) => {
-                    log::error!("Service had an error: {err:?}");
+                    tracing::error!("Service had an error: {err:?}");
                 }
                 Err(err) => {
-                    log::error!("Service future had an error: {err:?}");
+                    tracing::error!("Service future had an error: {err:?}");
                 }
             }
         }
         _ = wait_terminate() => {
-            log::info!("Application stopping");
+            tracing::info!("Application stopping");
         }
     }
 
@@ -269,7 +274,7 @@ async fn main() -> Result<(), eyre::Report> {
     _ = background_future.await;
     _ = service_future.await;
 
-    log::info!("Application stopped");
+    tracing::info!("Application stopped");
 
     Ok(())
 }

@@ -8,7 +8,9 @@ use std::{
 use sessions::Session;
 use tokio_rusqlite::Connection;
 
-use armonik::reexports::{tokio::sync::RwLock, tokio_stream::StreamExt, tonic::Status};
+use armonik::reexports::{
+    tokio::sync::RwLock, tokio_stream::StreamExt, tonic::Status, tracing_futures::Instrument,
+};
 
 use crate::{
     async_pool::AsyncPool,
@@ -38,7 +40,7 @@ pub struct Service {
 impl Service {
     pub async fn new(clusters: impl IntoIterator<Item = (String, Cluster)>) -> Self {
         let pool = AsyncPool::new(|| async {
-            Connection::open("file::memory:?cache=shared")
+            Connection::open("file::memory:?cache=shared&psow=1")
                 .await
                 .unwrap()
         });
@@ -69,6 +71,7 @@ impl Service {
             CREATE INDEX session_deleted_at ON session(deleted_at);
             CREATE INDEX session_duration ON session(duration);
             COMMIT;",
+            tracing::trace_span!("create_table"),
         )
         .await
         .unwrap();
@@ -89,8 +92,10 @@ impl Service {
         sessions: Vec<armonik::sessions::Raw>,
         cluster_name: String,
     ) -> Result<(), Status> {
+        let span = tracing::trace_span!("add_sessions");
         self.db
-            .call(move |conn| {
+            .call(span.clone(), move |conn| {
+                let prepare_span = tracing::trace_span!(parent: &span, "prepare").entered();
                 let mut stmt = conn.prepare_cached(
                     "WITH data AS (
                         SELECT
@@ -139,7 +144,9 @@ impl Service {
                         duration
                     FROM data",
                 )?;
+                std::mem::drop(prepare_span);
 
+                let _execute_span = tracing::trace_span!(parent: &span, "execute").entered();
                 stmt.execute([serde_json::to_string(
                     &sessions
                         .into_iter()
@@ -154,16 +161,21 @@ impl Service {
             .map_err(IntoStatus::into_status)
     }
 
+    #[armonik::reexports::tracing::instrument(level = armonik::reexports::tracing::Level::TRACE, skip_all)]
     pub async fn get_cluster_from_sessions(
         &self,
         session_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
         let mut missing_ids: HashSet<_> = session_ids.iter().copied().map(String::from).collect();
 
-        let (mapping, mut missing_ids) = self.db.call(move |conn| {
+        let (mapping, mut missing_ids) = self.db.call(tracing::Span::current(), move |conn| {
             let mut mapping = HashMap::<String, Vec<String>>::new();
 
+            let prepare_span = tracing::trace_span!("prepare");
             let mut stmt = conn.prepare_cached("SELECT session_id, cluster FROM session WHERE session_id IN (SELECT e.value FROM json_each(?) e)")?;
+            std::mem::drop(prepare_span);
+
+            let _execute_span = tracing::trace_span!("execute");
             let mut rows = stmt.query([serde_json::to_string(&missing_ids).unwrap()])?;
 
             while let Some(row) = rows.next()? {
@@ -207,10 +219,11 @@ impl Service {
                 .clusters
                 .values()
                 .map(|cluster| async {
-                    let client = match cluster.client().await {
+                    let mut client = match cluster.client().await {
                         Ok(client) => client,
                         Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
                     };
+                    let span = client.span();
                     let response = match client
                         .sessions()
                         .list(
@@ -220,6 +233,7 @@ impl Service {
                             0,
                             filter.len() as i32,
                         )
+                        .instrument(span)
                         .await
                     {
                         Ok(response) => response,
@@ -275,6 +289,7 @@ impl Service {
         Ok(sessions.into_keys().next())
     }
 
+    #[armonik::reexports::tracing::instrument(level = armonik::reexports::tracing::Level::TRACE, skip_all)]
     pub async fn get_cluster_from_results(
         &self,
         result_ids: &[&str],
@@ -321,13 +336,15 @@ impl Service {
                 .clusters
                 .values()
                 .map(|cluster| async {
-                    let client = match cluster.client().await {
+                    let mut client = match cluster.client().await {
                         Ok(client) => client,
                         Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
                     };
+                    let span = client.span();
                     let response = match client
                         .results()
                         .list(filter.clone(), Default::default(), 0, filter.len() as i32)
+                        .instrument(span)
                         .await
                     {
                         Ok(response) => response,
@@ -385,6 +402,7 @@ impl Service {
         Ok(results.into_keys().next())
     }
 
+    #[armonik::reexports::tracing::instrument(level = armonik::reexports::tracing::Level::TRACE, skip_all)]
     pub async fn get_cluster_from_tasks(
         &self,
         task_ids: &[&str],
@@ -431,10 +449,11 @@ impl Service {
                 .clusters
                 .values()
                 .map(|cluster| async {
-                    let client = match cluster.client().await {
+                    let mut client = match cluster.client().await {
                         Ok(client) => client,
                         Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
                     };
+                    let span = client.span();
                     let response = match client
                         .tasks()
                         .list(
@@ -444,6 +463,7 @@ impl Service {
                             0,
                             filter.len() as i32,
                         )
+                        .instrument(span)
                         .await
                     {
                         Ok(response) => response,
@@ -501,18 +521,21 @@ impl Service {
         Ok(results.into_keys().next())
     }
 
+    #[armonik::reexports::tracing::instrument(skip_all)]
     pub async fn update_sessions(&self) -> Result<(), Status> {
         let streams = self.clusters.values().map(|cluster| {
             Box::pin(async_stream::stream! {
-                let client = match cluster.client().await.map_err(IntoStatus::into_status) {
+                let mut client = match cluster.client().await.map_err(IntoStatus::into_status) {
                     Ok(client) => client,
                     Err(err) => {
                         yield (cluster.clone(), Err(err));
                         return;
                     }
                 };
+                let span = client.span();
                 let stream = match client
                     .get_all_sessions(Default::default(), Default::default())
+                    .instrument(span)
                     .await
                 {
                     Ok(stream) => stream,
@@ -541,14 +564,14 @@ impl Service {
             match response {
                 Ok(chunk) => {
                     if let Err(err) = self.add_sessions(chunk, cluster.name.clone()).await {
-                        log::error!(
+                        tracing::error!(
                             "Could not record sessions from cluster {}: {}",
                             cluster.name,
                             err
                         )
                     }
                 }
-                Err(err) => log::error!(
+                Err(err) => tracing::error!(
                     "Could not fetch sessions from cluster {}: {}",
                     cluster.name,
                     err

@@ -1,3 +1,7 @@
 [workspace]
 
 members = ["pdc-update", "load-balancer"]
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
