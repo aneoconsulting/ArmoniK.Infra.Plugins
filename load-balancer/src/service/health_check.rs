@@ -2,9 +2,10 @@ use std::{collections::HashMap, sync::Arc};
 
 use armonik::{
     health_checks,
-    reexports::{tonic, tracing_futures::Instrument},
+    reexports::{tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
     server::HealthChecksService,
 };
+use futures::stream::FuturesUnordered;
 
 use crate::utils::IntoStatus;
 
@@ -17,16 +18,22 @@ impl HealthChecksService for Service {
     ) -> std::result::Result<health_checks::check::Response, tonic::Status> {
         let mut services = HashMap::<String, (health_checks::Status, String)>::new();
 
-        for cluster in self.clusters.values() {
-            let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
-            let span = client.span();
-            let health = client
-                .health_checks()
-                .check()
-                .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?;
+        let mut healths = self
+            .clusters
+            .values()
+            .map(|cluster| async {
+                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let span = client.span();
+                client
+                    .health_checks()
+                    .check()
+                    .instrument(span)
+                    .await
+                    .map_err(IntoStatus::into_status)
+            })
+            .collect::<FuturesUnordered<_>>();
 
+        while let Some(health) = healths.try_next().await? {
             for service in health {
                 match services.entry(service.name) {
                     std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {

@@ -5,6 +5,7 @@ use armonik::{
     reexports::{tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
     server::PartitionsService,
 };
+use futures::stream::FuturesUnordered;
 
 use crate::utils::{merge_streams, IntoStatus};
 
@@ -91,28 +92,27 @@ impl PartitionsService for Service {
     ) -> std::result::Result<partitions::get::Response, tonic::Status> {
         let mut err = None;
 
-        for cluster in self.clusters.values() {
-            let mut client = match cluster.client().await {
-                Ok(client) => client,
-                Err(error) => {
-                    err = Some(error.into_status());
-                    continue;
-                }
-            };
-            let span = client.span();
+        let mut partitions = self
+            .clusters
+            .values()
+            .map(|cluster| async {
+                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let span = client.span();
 
-            match client
-                .partitions()
-                .call(request.clone())
-                .instrument(span)
-                .await
-            {
+                client
+                    .partitions()
+                    .call(request.clone())
+                    .instrument(span)
+                    .await
+                    .map_err(IntoStatus::into_status)
+            })
+            .collect::<FuturesUnordered<_>>();
+
+        while let Some(response) = partitions.next().await {
+            match response {
                 Ok(response) => return Ok(response),
-                Err(error) => {
-                    err = Some(error.into_status());
-                    continue;
-                }
-            };
+                Err(error) => err = Some(error),
+            }
         }
 
         match err {

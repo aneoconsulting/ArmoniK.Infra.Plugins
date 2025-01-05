@@ -3,11 +3,11 @@
 use std::{collections::HashMap, sync::Arc};
 
 use armonik::{
-    reexports::{tokio, tonic, tracing_futures::Instrument},
+    reexports::{tokio, tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
     server::SubmitterService,
     submitter,
 };
-use futures::StreamExt as _;
+use futures::stream::FuturesUnordered;
 
 use crate::utils::{impl_unary, IntoStatus};
 
@@ -20,20 +20,40 @@ impl SubmitterService for Service {
     ) -> std::result::Result<submitter::get_service_configuration::Response, tonic::Status> {
         tracing::warn!("SubmitterService::GetServiceConfiguration is deprecated, please use ResultsService::GetServiceConfiguration instead");
 
+        // Try to get the cached value
+        let size = self
+            .submitter_preferred_size
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if size > 0 {
+            return Ok(submitter::get_service_configuration::Response {
+                data_chunk_max_size: size,
+            });
+        }
+
         let mut min = 1 << 24;
 
-        for (_, cluster) in self.clusters.iter() {
-            let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
-            let span = client.span();
-            let conf = client
-                .results()
-                .get_service_configuration()
-                .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?;
+        let mut configurations = self
+            .clusters
+            .values()
+            .map(|cluster| async {
+                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let span = client.span();
+                client
+                    .submitter()
+                    .get_service_configuration()
+                    .instrument(span)
+                    .await
+                    .map_err(IntoStatus::into_status)
+            })
+            .collect::<FuturesUnordered<_>>();
 
+        while let Some(conf) = configurations.try_next().await? {
             min = min.min(conf.data_chunk_max_size);
         }
+
+        // As all clients should get the same result, it is safe to store it unconditionally
+        self.submitter_preferred_size
+            .store(min, std::sync::atomic::Ordering::Relaxed);
 
         Ok(submitter::get_service_configuration::Response {
             data_chunk_max_size: min,
@@ -97,16 +117,22 @@ impl SubmitterService for Service {
 
         let mut task_ids = Vec::new();
 
-        for cluster in self.clusters.values() {
-            let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
-            let span = client.span();
-            let response = client
-                .submitter()
-                .call(request.clone())
-                .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?;
+        let mut responses = self
+            .clusters
+            .values()
+            .map(|cluster| async {
+                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let span = client.span();
+                client
+                    .submitter()
+                    .call(request.clone())
+                    .instrument(span)
+                    .await
+                    .map_err(IntoStatus::into_status)
+            })
+            .collect::<FuturesUnordered<_>>();
 
+        while let Some(response) = responses.try_next().await? {
             task_ids.extend(response.task_ids);
         }
 
@@ -121,16 +147,22 @@ impl SubmitterService for Service {
 
         let mut session_ids = Vec::new();
 
-        for cluster in self.clusters.values() {
-            let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
-            let span = client.span();
-            let response = client
-                .submitter()
-                .call(request.clone())
-                .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?;
+        let mut responses = self
+            .clusters
+            .values()
+            .map(|cluster| async {
+                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let span = client.span();
+                client
+                    .submitter()
+                    .call(request.clone())
+                    .instrument(span)
+                    .await
+                    .map_err(IntoStatus::into_status)
+            })
+            .collect::<FuturesUnordered<_>>();
 
+        while let Some(response) = responses.try_next().await? {
             session_ids.extend(response.session_ids);
         }
 
@@ -147,18 +179,23 @@ impl SubmitterService for Service {
 
         let mut status_count = HashMap::<armonik::TaskStatus, i32>::new();
 
-        for cluster in self.clusters.values() {
-            let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
-            let span = client.span();
-            let response = client
-                .submitter()
-                .call(request.clone())
-                .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?
-                .values;
+        let mut responses = self
+            .clusters
+            .values()
+            .map(|cluster| async {
+                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let span = client.span();
+                client
+                    .submitter()
+                    .call(request.clone())
+                    .instrument(span)
+                    .await
+                    .map_err(IntoStatus::into_status)
+            })
+            .collect::<FuturesUnordered<_>>();
 
-            for (status, count) in response {
+        while let Some(response) = responses.try_next().await? {
+            for (status, count) in response.values {
                 *status_count.entry(status).or_default() += count;
             }
         }
@@ -247,16 +284,23 @@ impl SubmitterService for Service {
         tracing::warn!(
             "SubmitterService::CancelTasks is deprecated, please use TasksService::CancelTasks instead"
         );
-        for cluster in self.clusters.values() {
-            let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
-            let span = client.span();
-            client
-                .submitter()
-                .call(request.clone())
-                .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?;
-        }
+
+        let mut responses = self
+            .clusters
+            .values()
+            .map(|cluster| async {
+                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let span = client.span();
+                client
+                    .submitter()
+                    .call(request.clone())
+                    .instrument(span)
+                    .await
+                    .map_err(IntoStatus::into_status)
+            })
+            .collect::<FuturesUnordered<_>>();
+
+        while (responses.try_next().await?).is_some() {}
 
         Ok(submitter::cancel_tasks::Response {})
     }

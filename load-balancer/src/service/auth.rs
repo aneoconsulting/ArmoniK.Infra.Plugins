@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use armonik::{
     auth,
-    reexports::{tonic, tracing_futures::Instrument},
+    reexports::{tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
     server::AuthService,
 };
+use futures::stream::FuturesUnordered;
 
 use crate::utils::IntoStatus;
 
@@ -15,28 +16,26 @@ impl AuthService for Service {
         self: Arc<Self>,
         _request: auth::current_user::Request,
     ) -> std::result::Result<auth::current_user::Response, tonic::Status> {
-        let mut users = Vec::new();
+        let mut users = self
+            .clusters
+            .values()
+            .map(|cluster| async {
+                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let span = client.span();
+                client
+                    .auth()
+                    .current_user()
+                    .instrument(span)
+                    .await
+                    .map_err(IntoStatus::into_status)
+            })
+            .collect::<FuturesUnordered<_>>();
 
-        for cluster in self.clusters.values() {
-            let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
-            let span = client.span();
-            let user = client
-                .auth()
-                .current_user()
-                .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?;
-
-            users.push(user);
-        }
-
-        let mut users = users.into_iter();
-
-        let Some(user) = users.next() else {
+        let Some(user) = users.try_next().await? else {
             return Err(tonic::Status::internal("No cluster"));
         };
 
-        for other in users {
+        while let Some(other) = users.try_next().await? {
             if user != other {
                 return Err(tonic::Status::internal("Mismatch between clusters"));
             }

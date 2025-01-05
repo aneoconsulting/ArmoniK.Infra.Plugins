@@ -2,7 +2,10 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{
+        atomic::{AtomicI32, AtomicUsize},
+        Arc,
+    },
 };
 
 use sessions::Session;
@@ -35,6 +38,8 @@ pub struct Service {
     mapping_result: RwLock<HashMap<String, Arc<Cluster>>>,
     mapping_task: RwLock<HashMap<String, Arc<Cluster>>>,
     counter: AtomicUsize,
+    result_preferred_size: AtomicI32,
+    submitter_preferred_size: AtomicI32,
 }
 
 impl Service {
@@ -84,6 +89,8 @@ impl Service {
             mapping_result: RwLock::new(Default::default()),
             mapping_task: RwLock::new(Default::default()),
             counter: AtomicUsize::new(0),
+            result_preferred_size: AtomicI32::new(0),
+            submitter_preferred_size: AtomicI32::new(0),
         }
     }
 

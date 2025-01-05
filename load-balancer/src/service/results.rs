@@ -5,6 +5,7 @@ use armonik::{
     results,
     server::ResultsService,
 };
+use futures::stream::FuturesUnordered;
 
 use crate::utils::IntoStatus;
 
@@ -142,20 +143,39 @@ impl ResultsService for Service {
         self: Arc<Self>,
         _request: results::get_service_configuration::Request,
     ) -> std::result::Result<results::get_service_configuration::Response, tonic::Status> {
+        // Try to get the cached value
+        let size = self
+            .result_preferred_size
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if size > 0 {
+            return Ok(results::get_service_configuration::Response {
+                data_chunk_max_size: size,
+            });
+        }
         let mut min = 1 << 24;
 
-        for (_, cluster) in self.clusters.iter() {
-            let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
-            let span = client.span();
-            let conf = client
-                .results()
-                .get_service_configuration()
-                .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?;
+        let mut configurations = self
+            .clusters
+            .values()
+            .map(|cluster| async {
+                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let span = client.span();
+                client
+                    .results()
+                    .get_service_configuration()
+                    .instrument(span)
+                    .await
+                    .map_err(IntoStatus::into_status)
+            })
+            .collect::<FuturesUnordered<_>>();
 
+        while let Some(conf) = configurations.try_next().await? {
             min = min.min(conf.data_chunk_max_size);
         }
+
+        // As all clients should get the same result, it is safe to store it unconditionally
+        self.result_preferred_size
+            .store(min, std::sync::atomic::Ordering::Relaxed);
 
         Ok(results::get_service_configuration::Response {
             data_chunk_max_size: min,
