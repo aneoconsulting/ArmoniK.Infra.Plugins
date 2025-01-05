@@ -1,4 +1,4 @@
-FROM rust as build
+FROM --platform=$BUILDPLATFORM rust as build
 
 RUN apt-get update && apt-get install -y musl-tools musl-dev
 RUN case "$TARGETARCH" in \
