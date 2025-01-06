@@ -9,9 +9,10 @@ Though new sessions will go to the remaining available clusters.
 
 # Usage
 
-Once the load balancer is running, you can redirect your client to the load balancer endpoint. It does not require any further client modification.
+Once the load balancer is running, you can redirect your client to the load balancer endpoint.
+It does not require any further client modification.
 
-The load balancer does not listen to TLS connection, if you need this capability, you would need to add a nginx ingress similar to [the one in front of the ArmoniK control plane](https://github.com/aneoconsulting/ArmoniK.Infra/blob/main/armonik/ingress-configmap.tf).
+The load balancer does not listen on TLS, if you need this capability, you would need to add an nginx ingress similar to [the one in front of the ArmoniK control plane](https://github.com/aneoconsulting/ArmoniK.Infra/blob/main/armonik/ingress-configmap.tf).
 
 The Admin GUI is not part of the load balancer and should be added in front of it, using the same nginx ingress as previously.
 
