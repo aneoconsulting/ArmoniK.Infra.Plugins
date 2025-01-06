@@ -42,6 +42,7 @@ jobs:
       fail-fast: false
       matrix:
         image:
+          - { path: load-balancer, name: armonik_load_balancer, platforms: "linux/amd64,linux/arm64" }
           - { path: pdc-update, name: armonik_pdc_update, platforms: "linux/amd64,linux/arm64" }
     steps:
       - name: Checkout
@@ -57,6 +58,11 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_HUB_LOGIN }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Cargo Lock
+        working-directory: "${{ matrix.image.path }}"
+        run: |
+          [ -e Cargo.lock ] || cp ../Cargo.lock .
 
       - name: Build and push
         uses: docker/build-push-action@v4
@@ -74,6 +80,7 @@ jobs:
       matrix:
         project:
           - pdc-update
+          - load-balancer
         target:
           # Linux Musl
           - { platform: aarch64-unknown-linux-musl, os: linux, runner: ubuntu-latest, run: true }
@@ -88,6 +95,9 @@ jobs:
         toolchain:
           - stable
           - nightly
+        exclude:
+          - project: load-balancer
+            target: { platform: i686-pc-windows-msvc, os: windows, runner: windows-latest, run: true }
     runs-on: ${{ matrix.target.runner }}
     steps:
       - name: Checkout
@@ -121,26 +131,26 @@ jobs:
       - name: Build
         working-directory: "${{ matrix.project }}"
         run: |
-          cargo build --all --locked
+          cargo build --locked
       - name: Test
         if: matrix.target.run
         working-directory: "${{ matrix.project }}"
         run: |
-          cargo test --all --locked
+          cargo test --locked
       - name: Test Release
         if: matrix.target.run
         working-directory: "${{ matrix.project }}"
         run: |
-          cargo test --all --locked --release
+          cargo test --locked --release
       - name: Test Miri
         if: contains(matrix.toolchain, 'nightly')
         working-directory: "${{ matrix.project }}"
         run: |
-          cargo miri test --all --locked
+          cargo miri test --locked
       - name: Format
         working-directory: "${{ matrix.project }}"
         run: |
-          cargo fmt --all --check
+          cargo fmt --check
       - name: Doc
         if: matrix.target.os == 'linux'
         working-directory: "${{ matrix.project }}"
@@ -162,4 +172,4 @@ jobs:
       - name: Clippy
         working-directory: "${{ matrix.project }}"
         run: |
-          cargo clippy --all --no-deps -- -Dwarnings -Dunused-crate-dependencies
+          cargo clippy --no-deps -- -Dwarnings -Dunused-crate-dependencies

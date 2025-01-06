@@ -1,6 +1,6 @@
 FROM --platform=$BUILDPLATFORM rust as build
 
-RUN apt-get update && apt-get install -y musl-tools musl-dev
+RUN apt-get update && apt-get install -y musl-tools musl-dev protobuf-compiler ca-certificates && update-ca-certificates
 RUN case "$TARGETARCH" in \
         amd64) RUST_PLATFORM=x86_64-unknown-linux-musl ;; \
         arm64) RUST_PLATFORM=aarch64-unknown-linux-musl ;; \
@@ -17,17 +17,17 @@ RUN case "$TARGETARCH" in \
 
 WORKDIR /app
 
-
 RUN cargo init
 COPY Cargo.* .
 
 RUN cargo build --release
 
 COPY src src
-RUN touch src/main.rs && cargo build --release && mv target/*/release/pdc-update .
+RUN touch src/main.rs && cargo build --release && mv target/*/release/load-balancer .
 
 FROM scratch
-COPY --from=build /app/pdc-update /pdc-update
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /app/load-balancer /load-balancer
 USER 65534:65534
-ENTRYPOINT ["/pdc-update"]
+ENTRYPOINT ["/load-balancer"]
 CMD []
