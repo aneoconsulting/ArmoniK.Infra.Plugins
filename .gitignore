@@ -34,9 +34,10 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
-
+*.hcl
 # Ignore Terraform plugins
 terraform-plugins
+.terraform
 
 # others
 .idea
