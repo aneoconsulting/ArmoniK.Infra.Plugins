@@ -250,8 +250,7 @@ impl ResultsService for Service {
             })) => {
                 let Some(cluster) = self.get_cluster_from_session(&session_id).await? else {
                     return Err(tonic::Status::not_found(format!(
-                        "Session {} was not found",
-                        session_id
+                        "Session {session_id} was not found",
                     )));
                 };
 

@@ -32,7 +32,7 @@ impl EventsService for Service {
             .get_cluster_from_session(&session_id)
             .await?
             .ok_or_else(|| {
-                tonic::Status::not_found(format!("Session {} was not found", session_id))
+                tonic::Status::not_found(format!("Session {session_id} was not found"))
             })?;
 
         let span = tracing::Span::current();

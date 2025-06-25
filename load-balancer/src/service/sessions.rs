@@ -47,12 +47,11 @@ impl SessionsService for Service {
                 loop {
                     query_suffix.push_str(sep);
                     sep = " AND ";
-                    let (column, grpc, value_type) =
-                        field_to_column_name(cond.field.clone(), true)?;
+                    let column = field_to_column_name(cond.field.clone(), true)?;
                     if let sessions::Field::TaskOptionGeneric(key) = &cond.field {
                         params.push(Box::new(key.clone()));
                     }
-                    match (value_type, &cond.condition) {
+                    match (column.value_type, &cond.condition) {
                         (ValueType::String, sessions::filter::Condition::String(_)) => (),
                         (ValueType::Number, sessions::filter::Condition::Number(_)) => (),
                         (ValueType::Boolean, sessions::filter::Condition::Boolean(_)) => (),
@@ -63,7 +62,7 @@ impl SessionsService for Service {
                         _ => {
                             return Err(Status::invalid_argument(format!(
                                 "Condition {:?} is not valid for the field {}",
-                                &cond.condition, grpc
+                                &cond.condition, column.grpc
                             )));
                         }
                     }
@@ -198,7 +197,7 @@ impl SessionsService for Service {
                 ..
             } => (),
             _ => {
-                let (column, _, _) = field_to_column_name(request.sort.field, false)?;
+                let column = field_to_column_name(request.sort.field, false)?;
                 let direction = if matches!(request.sort.direction, armonik::SortDirection::Desc) {
                     "DESC"
                 } else {
@@ -557,6 +556,7 @@ impl Session {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 enum ValueType {
     String,
     Number,
@@ -567,10 +567,24 @@ enum ValueType {
     Array,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Column {
+    name: &'static str,
+    grpc: &'static str,
+    value_type: ValueType,
+}
+
+impl std::fmt::Display for Column {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name)
+    }
+}
+
+#[allow(clippy::result_large_err)]
 fn field_to_column_name(
     field: armonik::sessions::Field,
     filter: bool,
-) -> Result<(&'static str, &'static str, ValueType), Status> {
+) -> Result<Column, tonic::Status> {
     match field {
         sessions::Field::Raw(sessions::RawField::Unspecified) => {
             Err(Status::invalid_argument(if filter {
@@ -579,21 +593,31 @@ fn field_to_column_name(
                 "Sort field is not set"
             }))
         }
-        sessions::Field::Raw(sessions::RawField::SessionId) => {
-            Ok(("session_id", "SessionId", ValueType::String))
-        }
-        sessions::Field::Raw(sessions::RawField::Status) => {
-            Ok(("status", "Status", ValueType::Status))
-        }
-        sessions::Field::Raw(sessions::RawField::ClientSubmission) => {
-            Ok(("client_submission", "ClientSubmission", ValueType::Boolean))
-        }
-        sessions::Field::Raw(sessions::RawField::WorkerSubmission) => {
-            Ok(("worker_submission", "WorkerSubmission", ValueType::Boolean))
-        }
-        sessions::Field::Raw(sessions::RawField::PartitionIds) => {
-            Ok(("partition_ids", "PartitionIds", ValueType::Array))
-        }
+        sessions::Field::Raw(sessions::RawField::SessionId) => Ok(Column {
+            name: "session_id",
+            grpc: "SessionId",
+            value_type: ValueType::String,
+        }),
+        sessions::Field::Raw(sessions::RawField::Status) => Ok(Column {
+            name: "status",
+            grpc: "Status",
+            value_type: ValueType::Status,
+        }),
+        sessions::Field::Raw(sessions::RawField::ClientSubmission) => Ok(Column {
+            name: "client_submission",
+            grpc: "ClientSubmission",
+            value_type: ValueType::Boolean,
+        }),
+        sessions::Field::Raw(sessions::RawField::WorkerSubmission) => Ok(Column {
+            name: "worker_submission",
+            grpc: "WorkerSubmission",
+            value_type: ValueType::Boolean,
+        }),
+        sessions::Field::Raw(sessions::RawField::PartitionIds) => Ok(Column {
+            name: "partition_ids",
+            grpc: "PartitionIds",
+            value_type: ValueType::Array,
+        }),
         sessions::Field::Raw(sessions::RawField::Options) => {
             Err(Status::invalid_argument(if filter {
                 "Filter field Options is not valid for a RawField filter"
@@ -601,24 +625,36 @@ fn field_to_column_name(
                 "Sort field Options is not valid for a RawField sort"
             }))
         }
-        sessions::Field::Raw(sessions::RawField::CreatedAt) => {
-            Ok(("created_at", "CreatedAt", ValueType::Date))
-        }
-        sessions::Field::Raw(sessions::RawField::CancelledAt) => {
-            Ok(("cancelled_at", "CancelledAt", ValueType::Date))
-        }
-        sessions::Field::Raw(sessions::RawField::ClosedAt) => {
-            Ok(("closed_at", "ClosedAt", ValueType::Date))
-        }
-        sessions::Field::Raw(sessions::RawField::PurgedAt) => {
-            Ok(("purged_at", "PurgedAt", ValueType::Date))
-        }
-        sessions::Field::Raw(sessions::RawField::DeletedAt) => {
-            Ok(("deleted_at", "DeletedAt", ValueType::Date))
-        }
-        sessions::Field::Raw(sessions::RawField::Duration) => {
-            Ok(("duration", "Duration", ValueType::Duration))
-        }
+        sessions::Field::Raw(sessions::RawField::CreatedAt) => Ok(Column {
+            name: "created_at",
+            grpc: "CreatedAt",
+            value_type: ValueType::Date,
+        }),
+        sessions::Field::Raw(sessions::RawField::CancelledAt) => Ok(Column {
+            name: "cancelled_at",
+            grpc: "CancelledAt",
+            value_type: ValueType::Date,
+        }),
+        sessions::Field::Raw(sessions::RawField::ClosedAt) => Ok(Column {
+            name: "closed_at",
+            grpc: "ClosedAt",
+            value_type: ValueType::Date,
+        }),
+        sessions::Field::Raw(sessions::RawField::PurgedAt) => Ok(Column {
+            name: "purged_at",
+            grpc: "PurgedAt",
+            value_type: ValueType::Date,
+        }),
+        sessions::Field::Raw(sessions::RawField::DeletedAt) => Ok(Column {
+            name: "deleted_at",
+            grpc: "DeletedAt",
+            value_type: ValueType::Date,
+        }),
+        sessions::Field::Raw(sessions::RawField::Duration) => Ok(Column {
+            name: "duration",
+            grpc: "Duration",
+            value_type: ValueType::Duration,
+        }),
         sessions::Field::TaskOption(armonik::TaskOptionField::Unspecified) => {
             Err(Status::invalid_argument(if filter {
                 "Filter field is not set"
@@ -626,55 +662,55 @@ fn field_to_column_name(
                 "Sort field is not set"
             }))
         }
-        sessions::Field::TaskOption(armonik::TaskOptionField::MaxDuration) => Ok((
-            "default_task_options ->> 'max_duration'",
-            "DefaultTaskOptions.MaxDuration",
-            ValueType::Duration,
-        )),
-        sessions::Field::TaskOption(armonik::TaskOptionField::MaxRetries) => Ok((
-            "default_task_options ->> 'max_retries'",
-            "DefaultTaskOptions.MaxRetries",
-            ValueType::Number,
-        )),
-        sessions::Field::TaskOption(armonik::TaskOptionField::Priority) => Ok((
-            "default_task_options ->> 'priority'",
-            "DefaultTaskOptions.Priority",
-            ValueType::Number,
-        )),
-        sessions::Field::TaskOption(armonik::TaskOptionField::PartitionId) => Ok((
-            "default_task_options ->> 'partition_id'",
-            "DefaultTaskOptions.PartitionId",
-            ValueType::String,
-        )),
-        sessions::Field::TaskOption(armonik::TaskOptionField::ApplicationName) => Ok((
-            "default_task_options ->> 'application_name'",
-            "DefaultTaskOptions.ApplicationName",
-            ValueType::String,
-        )),
-        sessions::Field::TaskOption(armonik::TaskOptionField::ApplicationVersion) => Ok((
-            "default_task_options ->> 'application_version'",
-            "DefaultTaskOptions.ApplicationVersion",
-            ValueType::String,
-        )),
-        sessions::Field::TaskOption(armonik::TaskOptionField::ApplicationNamespace) => Ok((
-            "default_task_options ->> 'application_namespace'",
-            "DefaultTaskOptions.ApplicationNamespace",
-            ValueType::String,
-        )),
-        sessions::Field::TaskOption(armonik::TaskOptionField::ApplicationService) => Ok((
-            "default_task_options ->> 'application_service'",
-            "DefaultTaskOptions.ApplicationService",
-            ValueType::String,
-        )),
-        sessions::Field::TaskOption(armonik::TaskOptionField::ApplicationEngine) => Ok((
-            "default_task_options ->> 'engine_type'",
-            "DefaultTaskOptions.ApplicationEngine",
-            ValueType::String,
-        )),
-        sessions::Field::TaskOptionGeneric(_) => Ok((
-            "default_task_options -> 'options' ->> ?",
-            "DefaultTaskOptions.Options",
-            ValueType::String,
-        )),
+        sessions::Field::TaskOption(armonik::TaskOptionField::MaxDuration) => Ok(Column {
+            name: "default_task_options ->> 'max_duration'",
+            grpc: "DefaultTaskOptions.MaxDuration",
+            value_type: ValueType::Duration,
+        }),
+        sessions::Field::TaskOption(armonik::TaskOptionField::MaxRetries) => Ok(Column {
+            name: "default_task_options ->> 'max_retries'",
+            grpc: "DefaultTaskOptions.MaxRetries",
+            value_type: ValueType::Number,
+        }),
+        sessions::Field::TaskOption(armonik::TaskOptionField::Priority) => Ok(Column {
+            name: "default_task_options ->> 'priority'",
+            grpc: "DefaultTaskOptions.Priority",
+            value_type: ValueType::Number,
+        }),
+        sessions::Field::TaskOption(armonik::TaskOptionField::PartitionId) => Ok(Column {
+            name: "default_task_options ->> 'partition_id'",
+            grpc: "DefaultTaskOptions.PartitionId",
+            value_type: ValueType::String,
+        }),
+        sessions::Field::TaskOption(armonik::TaskOptionField::ApplicationName) => Ok(Column {
+            name: "default_task_options ->> 'application_name'",
+            grpc: "DefaultTaskOptions.ApplicationName",
+            value_type: ValueType::String,
+        }),
+        sessions::Field::TaskOption(armonik::TaskOptionField::ApplicationVersion) => Ok(Column {
+            name: "default_task_options ->> 'application_version'",
+            grpc: "DefaultTaskOptions.ApplicationVersion",
+            value_type: ValueType::String,
+        }),
+        sessions::Field::TaskOption(armonik::TaskOptionField::ApplicationNamespace) => Ok(Column {
+            name: "default_task_options ->> 'application_namespace'",
+            grpc: "DefaultTaskOptions.ApplicationNamespace",
+            value_type: ValueType::String,
+        }),
+        sessions::Field::TaskOption(armonik::TaskOptionField::ApplicationService) => Ok(Column {
+            name: "default_task_options ->> 'application_service'",
+            grpc: "DefaultTaskOptions.ApplicationService",
+            value_type: ValueType::String,
+        }),
+        sessions::Field::TaskOption(armonik::TaskOptionField::ApplicationEngine) => Ok(Column {
+            name: "default_task_options ->> 'engine_type'",
+            grpc: "DefaultTaskOptions.ApplicationEngine",
+            value_type: ValueType::String,
+        }),
+        sessions::Field::TaskOptionGeneric(_) => Ok(Column {
+            name: "default_task_options -> 'options' ->> ?",
+            grpc: "DefaultTaskOptions.Options",
+            value_type: ValueType::String,
+        }),
     }
 }

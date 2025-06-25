@@ -1372,17 +1372,14 @@ dependencies = [
  "async-stream",
  "clap",
  "config",
- "env_logger",
  "eyre",
  "futures",
  "lockfree-object-pool",
- "log",
  "rusqlite",
  "serde",
  "serde_json",
  "tokio",
  "tokio-rusqlite",
- "tower-http 0.6.6",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2752,7 +2749,6 @@ dependencies = [
  "tower 0.5.2",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]

@@ -59,7 +59,7 @@ impl Cluster {
         }
     }
 
-    pub async fn client(&self) -> Result<ClusterClient, armonik::client::ConnectionError> {
+    pub async fn client(&self) -> Result<ClusterClient<'_>, armonik::client::ConnectionError> {
         let span = tracing::debug_span!("Cluster", name = self.name);
         let client = self
             .pool
