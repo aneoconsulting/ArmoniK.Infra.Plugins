@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use armonik::{
     reexports::{tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
-    server::TasksService,
+    server::{RequestContext, TasksService},
     tasks,
 };
 use futures::stream::FuturesUnordered;
@@ -15,6 +15,7 @@ impl TasksService for Service {
     async fn list(
         self: Arc<Self>,
         request: tasks::list::Request,
+        _context: RequestContext,
     ) -> std::result::Result<tasks::list::Response, tonic::Status> {
         let mut requested_sessions = Vec::new();
 
@@ -77,6 +78,7 @@ impl TasksService for Service {
     async fn list_detailed(
         self: Arc<Self>,
         request: tasks::list_detailed::Request,
+        _context: RequestContext,
     ) -> std::result::Result<tasks::list_detailed::Response, tonic::Status> {
         let mut requested_sessions = Vec::new();
 
@@ -139,6 +141,7 @@ impl TasksService for Service {
     async fn get(
         self: Arc<Self>,
         request: tasks::get::Request,
+        _context: RequestContext,
     ) -> std::result::Result<tasks::get::Response, tonic::Status> {
         crate::utils::impl_unary!(self.tasks, request, task)
     }
@@ -146,6 +149,7 @@ impl TasksService for Service {
     async fn cancel(
         self: Arc<Self>,
         request: tasks::cancel::Request,
+        _context: RequestContext,
     ) -> std::result::Result<tasks::cancel::Response, tonic::Status> {
         let mut futures = self
             .clusters
@@ -176,6 +180,7 @@ impl TasksService for Service {
     async fn get_result_ids(
         self: Arc<Self>,
         request: tasks::get_result_ids::Request,
+        _context: RequestContext,
     ) -> std::result::Result<tasks::get_result_ids::Response, tonic::Status> {
         let mut futures = self
             .clusters
@@ -208,6 +213,7 @@ impl TasksService for Service {
     async fn count_status(
         self: Arc<Self>,
         request: tasks::count_status::Request,
+        _context: RequestContext,
     ) -> std::result::Result<tasks::count_status::Response, tonic::Status> {
         let mut futures = self
             .clusters
@@ -245,6 +251,7 @@ impl TasksService for Service {
     async fn submit(
         self: Arc<Self>,
         request: tasks::submit::Request,
+        _context: RequestContext,
     ) -> std::result::Result<tasks::submit::Response, tonic::Status> {
         crate::utils::impl_unary!(self.tasks, request, session)
     }

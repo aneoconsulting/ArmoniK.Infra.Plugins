@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use armonik::{
     reexports::{tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
-    server::VersionsService,
+    server::{RequestContext, VersionsService},
     versions,
 };
 use futures::stream::FuturesUnordered;
@@ -15,6 +15,7 @@ impl VersionsService for Service {
     async fn list(
         self: Arc<Self>,
         _request: versions::list::Request,
+        _context: RequestContext,
     ) -> std::result::Result<versions::list::Response, tonic::Status> {
         let mut cluster_versions = self
             .clusters

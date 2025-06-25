@@ -3,7 +3,7 @@ use std::sync::Arc;
 use armonik::{
     auth,
     reexports::{tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
-    server::AuthService,
+    server::{AuthService, RequestContext},
 };
 use futures::stream::FuturesUnordered;
 
@@ -15,6 +15,7 @@ impl AuthService for Service {
     async fn current_user(
         self: Arc<Self>,
         _request: auth::current_user::Request,
+        _context: RequestContext,
     ) -> std::result::Result<auth::current_user::Response, tonic::Status> {
         let mut users = self
             .clusters

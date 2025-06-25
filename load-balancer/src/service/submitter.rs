@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use armonik::{
     reexports::{tokio, tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
-    server::SubmitterService,
+    server::{RequestContext, SubmitterService},
     submitter,
 };
 use futures::stream::FuturesUnordered;
@@ -17,6 +17,7 @@ impl SubmitterService for Service {
     async fn get_service_configuration(
         self: Arc<Self>,
         _request: submitter::get_service_configuration::Request,
+        _context: RequestContext,
     ) -> std::result::Result<submitter::get_service_configuration::Response, tonic::Status> {
         tracing::warn!("SubmitterService::GetServiceConfiguration is deprecated, please use ResultsService::GetServiceConfiguration instead");
 
@@ -63,6 +64,7 @@ impl SubmitterService for Service {
     async fn create_session(
         self: Arc<Self>,
         request: submitter::create_session::Request,
+        _context: RequestContext,
     ) -> std::result::Result<submitter::create_session::Response, tonic::Status> {
         tracing::warn!("SubmitterService::CreateSession is deprecated, please use SessionsService::CreateSession instead");
 
@@ -101,6 +103,7 @@ impl SubmitterService for Service {
     async fn cancel_session(
         self: Arc<Self>,
         request: submitter::cancel_session::Request,
+        _context: RequestContext,
     ) -> std::result::Result<submitter::cancel_session::Response, tonic::Status> {
         tracing::warn!("SubmitterService::CancelSession is deprecated, please use SessionsService::CancelSession instead");
 
@@ -110,6 +113,7 @@ impl SubmitterService for Service {
     async fn list_tasks(
         self: Arc<Self>,
         request: submitter::list_tasks::Request,
+        _context: RequestContext,
     ) -> std::result::Result<submitter::list_tasks::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::ListTasks is deprecated, please use TasksService::ListTasks instead"
@@ -142,6 +146,7 @@ impl SubmitterService for Service {
     async fn list_sessions(
         self: Arc<Self>,
         request: submitter::list_sessions::Request,
+        _context: RequestContext,
     ) -> std::result::Result<submitter::list_sessions::Response, tonic::Status> {
         tracing::warn!("SubmitterService::ListSessions is deprecated, please use SessionsService::ListSessions instead");
 
@@ -172,6 +177,7 @@ impl SubmitterService for Service {
     async fn count_tasks(
         self: Arc<Self>,
         request: submitter::count_tasks::Request,
+        _context: RequestContext,
     ) -> std::result::Result<submitter::count_tasks::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::CountTasks is deprecated, please use TasksService::CountTasksByStatus instead"
@@ -208,6 +214,7 @@ impl SubmitterService for Service {
     async fn try_get_task_output(
         self: Arc<Self>,
         request: submitter::try_get_task_output::Request,
+        _context: RequestContext,
     ) -> std::result::Result<submitter::try_get_task_output::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::TryGetTaskOutput is deprecated, please use TasksService::GetTask instead"
@@ -218,6 +225,7 @@ impl SubmitterService for Service {
     async fn wait_for_availability(
         self: Arc<Self>,
         request: submitter::wait_for_availability::Request,
+        _context: RequestContext,
     ) -> std::result::Result<submitter::wait_for_availability::Response, tonic::Status> {
         tracing::warn!("SubmitterService::WaitForAvailability is deprecated, please use EventsService::GetEvents instead");
         crate::utils::impl_unary!(self.submitter, request, session)
@@ -226,6 +234,7 @@ impl SubmitterService for Service {
     async fn wait_for_completion(
         self: Arc<Self>,
         request: submitter::wait_for_completion::Request,
+        context: RequestContext,
     ) -> std::result::Result<submitter::wait_for_completion::Response, tonic::Status> {
         tracing::warn!("SubmitterService::WaitForCompletion is deprecated, please use EventsService::GetEvents instead");
         let mut status_count = HashMap::new();
@@ -265,9 +274,12 @@ impl SubmitterService for Service {
                 std::mem::drop(wait_all);
 
                 return self
-                    .count_tasks(armonik::submitter::count_tasks::Request {
-                        filter: request.filter,
-                    })
+                    .count_tasks(
+                        armonik::submitter::count_tasks::Request {
+                            filter: request.filter,
+                        },
+                        context,
+                    )
                     .await;
             }
         }
@@ -280,6 +292,7 @@ impl SubmitterService for Service {
     async fn cancel_tasks(
         self: Arc<Self>,
         request: submitter::cancel_tasks::Request,
+        _context: RequestContext,
     ) -> std::result::Result<submitter::cancel_tasks::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::CancelTasks is deprecated, please use TasksService::CancelTasks instead"
@@ -308,6 +321,7 @@ impl SubmitterService for Service {
     async fn task_status(
         self: Arc<Self>,
         request: submitter::task_status::Request,
+        _context: RequestContext,
     ) -> std::result::Result<submitter::task_status::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::TaskStatus is deprecated, please use TasksService::ListTasks instead"
@@ -338,6 +352,7 @@ impl SubmitterService for Service {
     async fn result_status(
         self: Arc<Self>,
         request: submitter::result_status::Request,
+        _context: RequestContext,
     ) -> std::result::Result<submitter::result_status::Response, tonic::Status> {
         tracing::warn!("SubmitterService::ResultStatus is deprecated, please use ResultsService::ListResults instead");
         crate::utils::impl_unary!(self.submitter, request, session)
@@ -346,6 +361,7 @@ impl SubmitterService for Service {
     async fn try_get_result(
         self: Arc<Self>,
         request: submitter::try_get_result::Request,
+        _context: RequestContext,
     ) -> Result<
         impl tonic::codegen::tokio_stream::Stream<
                 Item = Result<submitter::try_get_result::Response, tonic::Status>,
@@ -387,6 +403,7 @@ impl SubmitterService for Service {
     async fn create_small_tasks(
         self: Arc<Self>,
         request: submitter::create_tasks::SmallRequest,
+        _context: RequestContext,
     ) -> Result<submitter::create_tasks::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::CreateSmallTasks is deprecated, please use a combination of ResultsService::CreateResults and TasksService::SubmitTasks instead"
@@ -400,6 +417,7 @@ impl SubmitterService for Service {
                 Item = Result<submitter::create_tasks::LargeRequest, tonic::Status>,
             > + Send
             + 'static,
+        _context: RequestContext,
     ) -> Result<submitter::create_tasks::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::CreateLargeTasks is deprecated, please use a combination of ResultsService::CreateResults and TasksService::SubmitTasks instead"

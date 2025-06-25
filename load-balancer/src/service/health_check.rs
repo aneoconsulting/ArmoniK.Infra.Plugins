@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use armonik::{
     health_checks,
     reexports::{tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
-    server::HealthChecksService,
+    server::{HealthChecksService, RequestContext},
 };
 use futures::stream::FuturesUnordered;
 
@@ -15,6 +15,7 @@ impl HealthChecksService for Service {
     async fn check(
         self: Arc<Self>,
         _request: health_checks::check::Request,
+        _context: RequestContext,
     ) -> std::result::Result<health_checks::check::Response, tonic::Status> {
         let mut services = HashMap::<String, (health_checks::Status, String)>::new();
 

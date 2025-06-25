@@ -3,7 +3,7 @@ use std::sync::Arc;
 use armonik::{
     partitions,
     reexports::{tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
-    server::PartitionsService,
+    server::{PartitionsService, RequestContext},
 };
 use futures::stream::FuturesUnordered;
 
@@ -15,6 +15,7 @@ impl PartitionsService for Service {
     async fn list(
         self: Arc<Self>,
         request: partitions::list::Request,
+        _context: RequestContext,
     ) -> std::result::Result<partitions::list::Response, tonic::Status> {
         let Ok(page) = usize::try_from(request.page) else {
             return Err(tonic::Status::invalid_argument("Page should be positive"));
@@ -89,6 +90,7 @@ impl PartitionsService for Service {
     async fn get(
         self: Arc<Self>,
         request: partitions::get::Request,
+        _context: RequestContext,
     ) -> std::result::Result<partitions::get::Response, tonic::Status> {
         let mut err = None;
 

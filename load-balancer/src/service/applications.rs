@@ -3,7 +3,7 @@ use std::sync::Arc;
 use armonik::{
     applications,
     reexports::{tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
-    server::ApplicationsService,
+    server::{ApplicationsService, RequestContext},
 };
 
 use crate::utils::{merge_streams, IntoStatus};
@@ -14,6 +14,7 @@ impl ApplicationsService for Service {
     async fn list(
         self: Arc<Self>,
         request: applications::list::Request,
+        _context: RequestContext,
     ) -> std::result::Result<applications::list::Response, tonic::Status> {
         let Ok(page) = usize::try_from(request.page) else {
             return Err(tonic::Status::invalid_argument("Page should be positive"));

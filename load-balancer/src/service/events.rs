@@ -3,7 +3,7 @@ use std::sync::Arc;
 use armonik::{
     events,
     reexports::{tokio_stream::StreamExt, tonic, tracing_futures::Instrument},
-    server::EventsService,
+    server::{EventsService, RequestContext},
 };
 
 use crate::utils::IntoStatus;
@@ -14,6 +14,7 @@ impl EventsService for Service {
     async fn subscribe(
         self: Arc<Self>,
         request: events::subscribe::Request,
+        _context: RequestContext,
     ) -> Result<
         impl tonic::codegen::tokio_stream::Stream<
                 Item = Result<events::subscribe::Response, tonic::Status>,
