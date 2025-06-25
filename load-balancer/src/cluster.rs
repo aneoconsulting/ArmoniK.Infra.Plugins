@@ -147,7 +147,8 @@ impl ClusterClient<'_> {
                             page_index,
                             page_size,
                         )
-                        .await.unwrap();
+                        .await
+                        .map_err(crate::utils::IntoStatus::into_status)?;
 
                     if page.sessions.is_empty() {
                         break;
