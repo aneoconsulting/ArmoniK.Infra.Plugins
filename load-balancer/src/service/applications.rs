@@ -6,7 +6,7 @@ use armonik::{
     server::{ApplicationsService, RequestContext},
 };
 
-use crate::utils::{merge_streams, IntoStatus};
+use crate::utils::{merge_streams, IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -44,13 +44,28 @@ impl ApplicationsService for Service {
                 while let Some(item) = stream.next().await {
                     yield item;
                 }
+
+                yield Ok(vec![]);
             })
         });
         let mut streams = std::pin::pin!(merge_streams(streams));
 
-        while let Some(chunk) = streams.try_next().await? {
-            applications.extend(chunk);
+        let mut error = RecoverableResult::new();
+        while let Some(chunk) = streams.next().await {
+            match chunk {
+                Ok(chunk) => {
+                    error.success(());
+                    applications.extend(chunk);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Error while listing applications, listing could be partial: {err}"
+                    );
+                    error.error(err);
+                }
+            }
         }
+        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
 
         if !request.sort.fields.is_empty() {
             applications.sort_by(|a, b| {

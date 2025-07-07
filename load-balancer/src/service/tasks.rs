@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::IntoStatus;
+use crate::utils::{IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -170,9 +170,22 @@ impl TasksService for Service {
             .collect::<FuturesUnordered<_>>();
 
         let mut tasks = Vec::new();
-        while let Some(chunk) = futures.try_next().await? {
-            tasks.extend(chunk.into_iter())
+        let mut error = RecoverableResult::new();
+        while let Some(chunk) = futures.next().await {
+            match chunk {
+                Ok(chunk) => {
+                    error.success(());
+                    tasks.extend(chunk.into_iter());
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Error while cancelling tasks, cancelling could be partial: {err}"
+                    );
+                    error.error(err);
+                }
+            }
         }
+        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
 
         Ok(tasks::cancel::Response { tasks })
     }
@@ -201,11 +214,24 @@ impl TasksService for Service {
             .collect::<FuturesUnordered<_>>();
 
         let mut task_results = HashMap::<String, Vec<String>>::new();
-        while let Some(response) = futures.try_next().await? {
-            for (task_id, result_ids) in response {
-                task_results.entry(task_id).or_default().extend(result_ids);
+        let mut error = RecoverableResult::new();
+        while let Some(response) = futures.next().await {
+            match response {
+                Ok(response) => {
+                    error.success(());
+                    for (task_id, result_ids) in response {
+                        task_results.entry(task_id).or_default().extend(result_ids);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Error while getting result ids, listing could be partial: {err}"
+                    );
+                    error.error(err);
+                }
             }
         }
+        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
 
         Ok(tasks::get_result_ids::Response { task_results })
     }
@@ -234,11 +260,22 @@ impl TasksService for Service {
             .collect::<FuturesUnordered<_>>();
 
         let mut status = HashMap::<armonik::TaskStatus, i32>::new();
-        while let Some(response) = futures.try_next().await? {
-            for count in response {
-                *status.entry(count.status).or_default() += count.count;
+        let mut error = RecoverableResult::new();
+        while let Some(response) = futures.next().await {
+            match response {
+                Ok(response) => {
+                    error.success(());
+                    for count in response {
+                        *status.entry(count.status).or_default() += count.count;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("Error while counting tasks, count could be partial: {err}");
+                    error.error(err);
+                }
             }
         }
+        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
 
         Ok(armonik::tasks::count_status::Response {
             status: status

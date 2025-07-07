@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{merge_streams, IntoStatus};
+use crate::utils::{merge_streams, IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -45,13 +45,28 @@ impl PartitionsService for Service {
                 while let Some(item) = stream.next().await {
                     yield item;
                 }
+
+                yield Ok(vec![]);
             })
         });
         let mut streams = std::pin::pin!(merge_streams(streams));
 
-        while let Some(chunk) = streams.try_next().await? {
-            partitions.extend(chunk);
+        let mut error = RecoverableResult::new();
+        while let Some(chunk) = streams.next().await {
+            match chunk {
+                Ok(chunk) => {
+                    error.success(());
+                    partitions.extend(chunk);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Error while listing partitions, listing could be partial: {err}"
+                    );
+                    error.error(err);
+                }
+            }
         }
+        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
 
         match &request.sort.field {
             partitions::Field::Unspecified => (),

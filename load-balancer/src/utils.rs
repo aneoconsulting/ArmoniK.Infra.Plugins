@@ -102,3 +102,64 @@ where
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub enum RecoverableResult<T, E> {
+    Unknown,
+    Recovered(T),
+    Error(E),
+}
+
+impl<T, E> Default for RecoverableResult<T, E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T, E> RecoverableResult<T, E> {
+    pub fn new() -> Self {
+        Self::Unknown
+    }
+
+    pub fn error(&mut self, error: E) {
+        match self {
+            RecoverableResult::Unknown => *self = RecoverableResult::Error(error),
+            RecoverableResult::Recovered(_) => (),
+            RecoverableResult::Error(_) => (),
+        }
+    }
+
+    pub fn success(&mut self, value: T) {
+        *self = RecoverableResult::Recovered(value)
+    }
+
+    pub fn to_result<F: FnOnce() -> Result<T, E>>(self, unknown: F) -> Result<T, E> {
+        match self {
+            RecoverableResult::Unknown => unknown(),
+            RecoverableResult::Recovered(value) => Ok(value),
+            RecoverableResult::Error(error) => Err(error),
+        }
+    }
+
+    pub fn ok(self) -> Result<T, E>
+    where
+        T: Default,
+    {
+        self.to_result(|| Ok(Default::default()))
+    }
+
+    pub fn get_value(&self) -> Option<&T> {
+        match self {
+            RecoverableResult::Unknown => None,
+            RecoverableResult::Recovered(value) => Some(value),
+            RecoverableResult::Error(_) => None,
+        }
+    }
+    pub fn get_mut_value(&mut self) -> Option<&mut T> {
+        match self {
+            RecoverableResult::Unknown => None,
+            RecoverableResult::Recovered(value) => Some(value),
+            RecoverableResult::Error(_) => None,
+        }
+    }
+}

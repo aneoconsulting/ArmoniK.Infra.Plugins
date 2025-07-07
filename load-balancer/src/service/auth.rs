@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::IntoStatus;
+use crate::utils::{IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -32,15 +32,26 @@ impl AuthService for Service {
             })
             .collect::<FuturesUnordered<_>>();
 
-        let Some(user) = users.try_next().await? else {
-            return Err(tonic::Status::internal("No cluster"));
-        };
+        let mut user = RecoverableResult::new();
 
-        while let Some(other) = users.try_next().await? {
-            if user != other {
-                return Err(tonic::Status::internal("Mismatch between clusters"));
+        while let Some(candidate) = users.next().await {
+            match candidate {
+                Ok(candidate) => match &user {
+                    RecoverableResult::Unknown => user.success(candidate),
+                    RecoverableResult::Recovered(user) => {
+                        if *user != candidate {
+                            return Err(tonic::Status::internal("Mismatch between clusters"));
+                        }
+                    }
+                    RecoverableResult::Error(_) => user.success(candidate),
+                },
+                Err(err) => {
+                    tracing::warn!("Error while getting curring user, user permissions could be partial: {err}");
+                    user.error(err);
+                }
             }
         }
+        let user = user.to_result(|| Err(tonic::Status::internal("No cluster")))?;
 
         Ok(auth::current_user::Response { user })
     }

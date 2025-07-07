@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::IntoStatus;
+use crate::utils::{IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -32,15 +32,27 @@ impl VersionsService for Service {
             })
             .collect::<FuturesUnordered<_>>();
 
-        let Some(versions) = cluster_versions.try_next().await? else {
-            return Err(tonic::Status::internal("No cluster"));
-        };
-
-        while let Some(other) = cluster_versions.try_next().await? {
-            if versions != other {
-                return Err(tonic::Status::internal("Mismatch between clusters"));
+        let mut versions = RecoverableResult::new();
+        while let Some(response) = cluster_versions.next().await {
+            match response {
+                Ok(response) => {
+                    if let Some(versions) = versions.get_value() {
+                        if *versions != response {
+                            return Err(tonic::Status::internal("Mismatch between clusters"));
+                        }
+                    } else {
+                        versions.success(response);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Error while getting result service configuration, configuration could be partial: {err}"
+                    );
+                    versions.error(err);
+                }
             }
         }
+        let versions = versions.to_result(|| Err(tonic::Status::internal("No cluster")))?;
 
         Ok(versions)
     }

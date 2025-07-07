@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::IntoStatus;
+use crate::utils::{IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -167,7 +167,6 @@ impl ResultsService for Service {
                 data_chunk_max_size: size,
             });
         }
-        let mut min = 1 << 24;
 
         let mut configurations = self
             .clusters
@@ -184,16 +183,32 @@ impl ResultsService for Service {
             })
             .collect::<FuturesUnordered<_>>();
 
-        while let Some(conf) = configurations.try_next().await? {
-            min = min.min(conf.data_chunk_max_size);
+        let mut size = RecoverableResult::<i32, _>::new();
+        while let Some(conf) = configurations.next().await {
+            match conf {
+                Ok(conf) => {
+                    if let Some(size) = size.get_mut_value() {
+                        *size = conf.data_chunk_max_size.min(*size);
+                    } else {
+                        size.success(conf.data_chunk_max_size);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Error while getting result service configuration, configuration could be partial: {err}"
+                    );
+                    size.error(err);
+                }
+            }
         }
+        let size = size.to_result(|| Err(tonic::Status::internal("No cluster")))?;
 
         // As all clients should get the same result, it is safe to store it unconditionally
         self.result_preferred_size
-            .store(min, std::sync::atomic::Ordering::Relaxed);
+            .store(size, std::sync::atomic::Ordering::Relaxed);
 
         Ok(results::get_service_configuration::Response {
-            data_chunk_max_size: min,
+            data_chunk_max_size: size,
         })
     }
 
