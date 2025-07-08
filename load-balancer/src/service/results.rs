@@ -7,20 +7,22 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{IntoStatus, RecoverableResult};
+use crate::{
+    cluster::Cluster,
+    utils::{IntoStatus, RecoverableResult},
+};
 
 use super::Service;
 
-impl ResultsService for Service {
-    async fn list(
+impl Service {
+    pub async fn cluster_from_result_filter(
         self: Arc<Self>,
-        request: results::list::Request,
-        _context: RequestContext,
-    ) -> std::result::Result<results::list::Response, tonic::Status> {
+        filters: &results::filter::Or,
+    ) -> Result<Option<Arc<Cluster>>, tonic::Status> {
         let mut requested_results = Vec::new();
         let mut requested_sessions = Vec::new();
 
-        for and in &request.filters.or {
+        for and in &filters.or {
             let mut has_check = false;
 
             for field in and {
@@ -65,12 +67,7 @@ impl ResultsService for Service {
 
         let cluster = match (sessions.next(), results.next()) {
             (None, None) => {
-                return Ok(results::list::Response {
-                    results: Vec::new(),
-                    page: request.page,
-                    page_size: request.page_size,
-                    total: 0,
-                });
+                return Ok(None);
             }
             (None, Some(res_cluster)) => res_cluster.0,
             (Some(ses_cluster), None) => ses_cluster.0,
@@ -84,13 +81,28 @@ impl ResultsService for Service {
             }
         };
         match (sessions.next(), results.next()) {
-            (None, None) => {}
-            _ => {
-                return Err(tonic::Status::invalid_argument(
-                    "Cannot determine the cluster from the filter, multiple clusters targeted",
-                ));
-            }
+            (None, None) => Ok(Some(cluster)),
+            _ => Err(tonic::Status::invalid_argument(
+                "Cannot determine the cluster from the filter, multiple clusters targeted",
+            )),
         }
+    }
+}
+
+impl ResultsService for Service {
+    async fn list(
+        self: Arc<Self>,
+        request: results::list::Request,
+        _context: RequestContext,
+    ) -> std::result::Result<results::list::Response, tonic::Status> {
+        let Some(cluster) = self.cluster_from_result_filter(&request.filters).await? else {
+            return Ok(results::list::Response {
+                results: Vec::new(),
+                page: request.page,
+                page_size: request.page_size,
+                total: 0,
+            });
+        };
 
         let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
         let span = client.span();

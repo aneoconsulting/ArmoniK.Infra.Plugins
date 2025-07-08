@@ -7,33 +7,50 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{IntoStatus, RecoverableResult};
+use crate::{
+    cluster::Cluster,
+    utils::{IntoStatus, RecoverableResult},
+};
 
 use super::Service;
 
-impl TasksService for Service {
-    async fn list(
+impl Service {
+    pub async fn cluster_from_task_filter(
         self: Arc<Self>,
-        request: tasks::list::Request,
-        _context: RequestContext,
-    ) -> std::result::Result<tasks::list::Response, tonic::Status> {
+        filters: &tasks::filter::Or,
+    ) -> Result<Option<Arc<Cluster>>, tonic::Status> {
+        let mut requested_tasks = Vec::new();
         let mut requested_sessions = Vec::new();
 
-        for and in &request.filters.or {
+        for and in &filters.or {
             let mut has_check = false;
 
             for field in and {
-                if let armonik::tasks::filter::Field {
-                    field: armonik::tasks::Field::Summary(armonik::tasks::SummaryField::SessionId),
-                    condition:
-                        armonik::tasks::filter::Condition::String(armonik::FilterString {
-                            value,
-                            operator: armonik::FilterStringOperator::Equal,
-                        }),
-                } = field
-                {
-                    requested_sessions.push(value.as_str());
-                    has_check = true;
+                match field {
+                    armonik::tasks::filter::Field {
+                        field:
+                            armonik::tasks::Field::Summary(armonik::tasks::SummaryField::SessionId),
+                        condition:
+                            armonik::tasks::filter::Condition::String(armonik::FilterString {
+                                value,
+                                operator: armonik::FilterStringOperator::Equal,
+                            }),
+                    } => {
+                        requested_sessions.push(value.as_str());
+                        has_check = true;
+                    }
+                    armonik::tasks::filter::Field {
+                        field: armonik::tasks::Field::Summary(armonik::tasks::SummaryField::TaskId),
+                        condition:
+                            armonik::tasks::filter::Condition::String(armonik::FilterString {
+                                value,
+                                operator: armonik::FilterStringOperator::Equal,
+                            }),
+                    } => {
+                        requested_tasks.push(value.as_str());
+                        has_check = true;
+                    }
+                    _ => {}
                 }
             }
 
@@ -42,12 +59,44 @@ impl TasksService for Service {
             }
         }
 
-        let mut sessions = self
-            .get_cluster_from_sessions(&requested_sessions)
-            .await?
-            .into_iter();
+        let (sessions, results) = tokio::join!(
+            self.get_cluster_from_sessions(&requested_sessions),
+            self.get_cluster_from_tasks(&requested_tasks)
+        );
 
-        let Some((cluster, _)) = sessions.next() else {
+        let (mut sessions, mut tasks) = (sessions?.into_iter(), results?.into_iter());
+
+        let cluster = match (sessions.next(), tasks.next()) {
+            (None, None) => {
+                return Ok(None);
+            }
+            (None, Some(task_cluster)) => task_cluster.0,
+            (Some(ses_cluster), None) => ses_cluster.0,
+            (Some(ses_cluster), Some(task_cluster)) => {
+                if task_cluster != ses_cluster {
+                    return Err(tonic::Status::invalid_argument(
+                        "Cannot determine the cluster from the filter, multiple clusters targeted",
+                    ));
+                }
+                ses_cluster.0
+            }
+        };
+        match (sessions.next(), tasks.next()) {
+            (None, None) => Ok(Some(cluster)),
+            _ => Err(tonic::Status::invalid_argument(
+                "Cannot determine the cluster from the filter, multiple clusters targeted",
+            )),
+        }
+    }
+}
+
+impl TasksService for Service {
+    async fn list(
+        self: Arc<Self>,
+        request: tasks::list::Request,
+        _context: RequestContext,
+    ) -> std::result::Result<tasks::list::Response, tonic::Status> {
+        let Some(cluster) = self.cluster_from_task_filter(&request.filters).await? else {
             return Ok(tasks::list::Response {
                 tasks: Vec::new(),
                 page: request.page,
@@ -55,12 +104,6 @@ impl TasksService for Service {
                 total: 0,
             });
         };
-
-        if sessions.next().is_some() {
-            return Err(tonic::Status::invalid_argument(
-                "Cannot determine the cluster from the filter, multiple clusters targeted",
-            ));
-        }
 
         let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
         let span = client.span();
@@ -80,37 +123,7 @@ impl TasksService for Service {
         request: tasks::list_detailed::Request,
         _context: RequestContext,
     ) -> std::result::Result<tasks::list_detailed::Response, tonic::Status> {
-        let mut requested_sessions = Vec::new();
-
-        for and in &request.filters.or {
-            let mut has_check = false;
-
-            for field in and {
-                if let armonik::tasks::filter::Field {
-                    field: armonik::tasks::Field::Summary(armonik::tasks::SummaryField::SessionId),
-                    condition:
-                        armonik::tasks::filter::Condition::String(armonik::FilterString {
-                            value,
-                            operator: armonik::FilterStringOperator::Equal,
-                        }),
-                } = field
-                {
-                    requested_sessions.push(value.as_str());
-                    has_check = true;
-                }
-            }
-
-            if !has_check {
-                return Err(armonik::reexports::tonic::Status::invalid_argument(String::from("Cannot determine the cluster from the filter, missing condition on session_id")));
-            }
-        }
-
-        let mut sessions = self
-            .get_cluster_from_sessions(&requested_sessions)
-            .await?
-            .into_iter();
-
-        let Some((cluster, _)) = sessions.next() else {
+        let Some(cluster) = self.cluster_from_task_filter(&request.filters).await? else {
             return Ok(tasks::list_detailed::Response {
                 tasks: Vec::new(),
                 page: request.page,
@@ -118,12 +131,6 @@ impl TasksService for Service {
                 total: 0,
             });
         };
-
-        if sessions.next().is_some() {
-            return Err(tonic::Status::invalid_argument(
-                "Cannot determine the cluster from the filter, multiple clusters targeted",
-            ));
-        }
 
         let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
         let span = client.span();
