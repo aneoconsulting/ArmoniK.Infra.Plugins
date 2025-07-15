@@ -4,11 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# armonik = { version = "3.26.0-beta-0", features = ["client", "server"] }
-armonik = { git = "https://github.com/aneoconsulting/ArmoniK.Api.git", rev = "refs/pull/569/head", features = [
-  "client",
-  "server",
-] }
+armonik = { version = "3.26.0-beta-1", features = ["client", "server"] }
 async-stream = "0.3"
 futures = "0.3"
 config = "0.15"
