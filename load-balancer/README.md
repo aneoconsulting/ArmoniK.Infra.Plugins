@@ -79,7 +79,7 @@ Here are some examples:
 RUST_LOG=info
 
 # Info for everything, debug for armonik and load_balancer
-RUST_LOG=info,armonik=debug,load-balancer=debug
+RUST_LOG=info,armonik=debug,load_balancer=debug
 
 # Trace for everything, except gRPC internals
 RUST_LOG=trace,h2=off,tower=off
