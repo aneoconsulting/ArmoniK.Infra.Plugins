@@ -1,0 +1,20 @@
+[package]
+name = "load-balancer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+armonik = { version = "3.26.0-beta-1", features = ["client", "server"] }
+async-stream = "0.3"
+futures = "0.3"
+config = "0.15"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
+eyre = "0.6"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tokio-rusqlite = { version = "0.6", features = ["bundled"] }
+lockfree-object-pool = "0.1.6"
+serde_json = "1.0"
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

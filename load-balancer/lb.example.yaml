@@ -1,0 +1,28 @@
+# List of clusters
+clusters:
+  # configuration for the cluster called "remote"
+  remote:
+    # Endpoint of the cluster
+    endpoint: https://93.184.215.14:5001/
+    # Path to the client certificate
+    cert_pem:
+    # Path to the client certificate's private key
+    key_pem:
+    # Path to the Certificate Authority used to validate the server
+    ca_cert:
+    # Whether the server authenticity should be verified or not
+    allow_unsafe_connection: false
+    # Override the hostname for the TLS verification
+    override_target_name: example.com
+
+  # configuration for the cluster called "local"
+  local:
+    # Endpoint of the cluster
+    endpoint: http://localhost:5001/
+
+# IP on which the load balancer will listen (default: 0.0.0.0)
+listen_ip: 127.0.0.1
+# Port on which the load balancer will listen (default: 8081)
+listen_port: 1337
+# Time interval in seconds between session refreshes (default: 10)
+refresh_delay: 60
