@@ -8,12 +8,11 @@ use std::{
     },
 };
 
+use dashmap::DashMap;
 use sessions::Session;
 use tokio_rusqlite::Connection;
 
-use armonik::reexports::{
-    tokio::sync::RwLock, tokio_stream::StreamExt, tonic::Status, tracing_futures::Instrument,
-};
+use armonik::reexports::{tokio_stream::StreamExt, tonic::Status, tracing_futures::Instrument};
 
 use crate::{
     async_pool::AsyncPool,
@@ -35,8 +34,9 @@ mod versions;
 pub struct Service {
     clusters: HashMap<String, Arc<Cluster>>,
     db: AsyncPool<Connection>,
-    mapping_result: RwLock<HashMap<String, Arc<Cluster>>>,
-    mapping_task: RwLock<HashMap<String, Arc<Cluster>>>,
+    mapping_session: DashMap<String, Arc<Cluster>>,
+    mapping_result: DashMap<String, Arc<Cluster>>,
+    mapping_task: DashMap<String, Arc<Cluster>>,
     counter: AtomicUsize,
     result_preferred_size: AtomicI32,
     submitter_preferred_size: AtomicI32,
@@ -86,8 +86,9 @@ impl Service {
                 .map(|(name, cluster)| (name, Arc::new(cluster)))
                 .collect(),
             db: pool,
-            mapping_result: RwLock::new(Default::default()),
-            mapping_task: RwLock::new(Default::default()),
+            mapping_session: DashMap::new(),
+            mapping_result: DashMap::new(),
+            mapping_task: DashMap::new(),
             counter: AtomicUsize::new(0),
             result_preferred_size: AtomicI32::new(0),
             submitter_preferred_size: AtomicI32::new(0),
@@ -97,9 +98,16 @@ impl Service {
     pub async fn add_sessions(
         &self,
         sessions: Vec<armonik::sessions::Raw>,
-        cluster_name: String,
+        cluster: Arc<Cluster>,
     ) -> Result<(), Status> {
         let span = tracing::trace_span!("add_sessions");
+
+        for session in &sessions {
+            self.mapping_session
+                .entry(session.session_id.to_string())
+                .or_insert_with(|| cluster.clone());
+        }
+
         self.db
             .call(span.clone(), move |conn| {
                 let prepare_span = tracing::trace_span!(parent: &span, "prepare").entered();
@@ -157,7 +165,7 @@ impl Service {
                 stmt.execute([serde_json::to_string(
                     &sessions
                         .into_iter()
-                        .map(|session| Session::from_grpc(session, cluster_name.clone()))
+                        .map(|session| Session::from_grpc(session, cluster.name.clone()))
                         .collect::<Vec<_>>(),
                 )
                 .unwrap()])?;
@@ -173,36 +181,62 @@ impl Service {
         &self,
         session_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
-        let mut missing_ids: HashSet<_> = session_ids.iter().copied().map(String::from).collect();
+        let mut missing_ids = HashSet::new();
+        let mut mapping = HashMap::<Arc<Cluster>, Vec<String>>::new();
 
-        let (mapping, mut missing_ids) = self.db.call(tracing::Span::current(), move |conn| {
-            let mut mapping = HashMap::<String, Vec<String>>::new();
+        for &session_id in session_ids {
+            if let Some(cluster) = self.mapping_session.get(session_id) {
+                match mapping.entry(cluster.clone()) {
+                    std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
+                        occupied_entry.get_mut().push(String::from(session_id));
+                    }
+                    std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                        vacant_entry.insert(vec![String::from(session_id)]);
+                    }
+                }
+            } else {
+                missing_ids.insert(String::from(session_id));
+            }
+        }
 
-            let prepare_span = tracing::trace_span!("prepare");
-            let mut stmt = conn.prepare_cached("SELECT session_id, cluster FROM session WHERE session_id IN (SELECT e.value FROM json_each(?) e)")?;
-            std::mem::drop(prepare_span);
+        if !missing_ids.is_empty() {
+            tracing::error!("SQLITE database and hashmap are not synchronized");
+            let name_mapping;
+            (name_mapping, missing_ids) = self.db.call(tracing::Span::current(), move |conn| {
+                let mut name_mapping = HashMap::<String, Vec<String>>::new();
 
-            let _execute_span = tracing::trace_span!("execute");
-            let mut rows = stmt.query([serde_json::to_string(&missing_ids).unwrap()])?;
+                let prepare_span = tracing::trace_span!("prepare");
+                let mut stmt = conn.prepare_cached("SELECT session_id, cluster FROM session WHERE session_id IN (SELECT e.value FROM json_each(?) e)")?;
+                std::mem::drop(prepare_span);
 
-            while let Some(row) = rows.next()? {
-                let session_id: String = row.get(0)?;
-                let cluster: String = row.get(1)?;
+                let _execute_span = tracing::trace_span!("execute");
+                let mut rows = stmt.query([serde_json::to_string(&missing_ids).unwrap()])?;
 
-                missing_ids.remove(session_id.as_str());
-                match mapping.entry(cluster) {
-                    std::collections::hash_map::Entry::Occupied(mut occupied_entry) => occupied_entry.get_mut().push(session_id),
-                    std::collections::hash_map::Entry::Vacant(vacant_entry) => {vacant_entry.insert(vec![session_id]);},
+                while let Some(row) = rows.next()? {
+                    let session_id: String = row.get(0)?;
+                    let cluster: String = row.get(1)?;
+
+                    missing_ids.remove(session_id.as_str());
+                    match name_mapping.entry(cluster) {
+                        std::collections::hash_map::Entry::Occupied(mut occupied_entry) => occupied_entry.get_mut().push(session_id),
+                        std::collections::hash_map::Entry::Vacant(vacant_entry) => {vacant_entry.insert(vec![session_id]);},
+                    }
+                }
+
+                Result::<_, rusqlite::Error>::Ok((name_mapping, missing_ids))
+            }).await.map_err(IntoStatus::into_status)?;
+
+            for (cluster_name, mut sessions_ids) in name_mapping {
+                match mapping.entry(self.clusters[&cluster_name].clone()) {
+                    std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
+                        occupied_entry.get_mut().append(&mut sessions_ids);
+                    }
+                    std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                        vacant_entry.insert(sessions_ids);
+                    }
                 }
             }
-
-            Result::<_, rusqlite::Error>::Ok((mapping, missing_ids))
-        }).await.map_err(IntoStatus::into_status)?;
-
-        let mut mapping = mapping
-            .into_iter()
-            .map(|(cluster_name, session_ids)| (self.clusters[&cluster_name].clone(), session_ids))
-            .collect::<HashMap<_, _>>();
+        }
 
         if !missing_ids.is_empty() {
             let filter = missing_ids
@@ -257,11 +291,11 @@ impl Service {
                         if !sessions.is_empty() {
                             let cluster_mapping = mapping.entry(cluster.clone()).or_default();
                             for session in &sessions {
-                                missing_ids.remove(&session.session_id);
+                                missing_ids.remove(session.session_id.as_str());
                                 cluster_mapping.push(session.session_id.clone());
                             }
 
-                            self.add_sessions(sessions, cluster.name.clone()).await?;
+                            self.add_sessions(sessions, cluster.clone()).await?;
                         }
                     }
                     Err(err) => {
@@ -304,22 +338,18 @@ impl Service {
         let mut missing_ids = HashSet::new();
         let mut mapping = HashMap::<Arc<Cluster>, Vec<String>>::new();
 
-        {
-            let guard = self.mapping_result.read().await;
-
-            for &result_id in result_ids {
-                if let Some(cluster) = guard.get(result_id) {
-                    match mapping.entry(cluster.clone()) {
-                        std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
-                            occupied_entry.get_mut().push(String::from(result_id));
-                        }
-                        std::collections::hash_map::Entry::Vacant(vacant_entry) => {
-                            vacant_entry.insert(vec![String::from(result_id)]);
-                        }
+        for &result_id in result_ids {
+            if let Some(cluster) = self.mapping_result.get(result_id) {
+                match mapping.entry(cluster.clone()) {
+                    std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
+                        occupied_entry.get_mut().push(String::from(result_id));
                     }
-                } else {
-                    missing_ids.insert(result_id);
+                    std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                        vacant_entry.insert(vec![String::from(result_id)]);
+                    }
                 }
+            } else {
+                missing_ids.insert(result_id);
             }
         }
 
@@ -367,11 +397,10 @@ impl Service {
                     Ok(results) => {
                         if !results.is_empty() {
                             let cluster_mapping = mapping.entry(cluster.clone()).or_default();
-                            let mut guard = self.mapping_result.write().await;
                             for result in &results {
                                 missing_ids.remove(result.result_id.as_str());
                                 cluster_mapping.push(result.result_id.clone());
-                                guard
+                                self.mapping_result
                                     .entry(result.result_id.clone())
                                     .or_insert_with(|| cluster.clone());
                             }
@@ -417,22 +446,18 @@ impl Service {
         let mut missing_ids = HashSet::new();
         let mut mapping = HashMap::<Arc<Cluster>, Vec<String>>::new();
 
-        {
-            let guard = self.mapping_task.read().await;
-
-            for &task_id in task_ids {
-                if let Some(cluster) = guard.get(task_id) {
-                    match mapping.entry(cluster.clone()) {
-                        std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
-                            occupied_entry.get_mut().push(String::from(task_id));
-                        }
-                        std::collections::hash_map::Entry::Vacant(vacant_entry) => {
-                            vacant_entry.insert(vec![String::from(task_id)]);
-                        }
+        for &task_id in task_ids {
+            if let Some(cluster) = self.mapping_task.get(task_id) {
+                match mapping.entry(cluster.clone()) {
+                    std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
+                        occupied_entry.get_mut().push(String::from(task_id));
                     }
-                } else {
-                    missing_ids.insert(task_id);
+                    std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                        vacant_entry.insert(vec![String::from(task_id)]);
+                    }
                 }
+            } else {
+                missing_ids.insert(task_id);
             }
         }
 
@@ -486,11 +511,10 @@ impl Service {
                     Ok(tasks) => {
                         if !tasks.is_empty() {
                             let cluster_mapping = mapping.entry(cluster.clone()).or_default();
-                            let mut guard = self.mapping_task.write().await;
                             for task in &tasks {
                                 missing_ids.remove(task.task_id.as_str());
                                 cluster_mapping.push(task.task_id.clone());
-                                guard
+                                self.mapping_task
                                     .entry(task.task_id.clone())
                                     .or_insert_with(|| cluster.clone());
                             }
@@ -570,7 +594,7 @@ impl Service {
         while let Some((cluster, response)) = streams.next().await {
             match response {
                 Ok(chunk) => {
-                    if let Err(err) = self.add_sessions(chunk, cluster.name.clone()).await {
+                    if let Err(err) = self.add_sessions(chunk, cluster.clone()).await {
                         tracing::error!(
                             "Could not record sessions from cluster {}: {}",
                             cluster.name,
