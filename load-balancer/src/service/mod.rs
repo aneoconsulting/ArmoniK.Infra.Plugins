@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use dashmap::DashMap;
+use quick_cache::sync::Cache;
 use sessions::Session;
 use tokio_rusqlite::Connection;
 
@@ -34,9 +34,9 @@ mod versions;
 pub struct Service {
     clusters: HashMap<String, Arc<Cluster>>,
     db: AsyncPool<Connection>,
-    mapping_session: DashMap<String, Arc<Cluster>>,
-    mapping_result: DashMap<String, Arc<Cluster>>,
-    mapping_task: DashMap<String, Arc<Cluster>>,
+    mapping_session: Cache<String, Arc<Cluster>>,
+    mapping_result: Cache<String, Arc<Cluster>>,
+    mapping_task: Cache<String, Arc<Cluster>>,
     counter: AtomicUsize,
     result_preferred_size: AtomicI32,
     submitter_preferred_size: AtomicI32,
@@ -86,9 +86,9 @@ impl Service {
                 .map(|(name, cluster)| (name, Arc::new(cluster)))
                 .collect(),
             db: pool,
-            mapping_session: DashMap::new(),
-            mapping_result: DashMap::new(),
-            mapping_task: DashMap::new(),
+            mapping_session: Cache::new(1000000),
+            mapping_result: Cache::new(10000000),
+            mapping_task: Cache::new(10000000),
             counter: AtomicUsize::new(0),
             result_preferred_size: AtomicI32::new(0),
             submitter_preferred_size: AtomicI32::new(0),
@@ -101,12 +101,6 @@ impl Service {
         cluster: Arc<Cluster>,
     ) -> Result<(), Status> {
         let span = tracing::trace_span!("add_sessions");
-
-        for session in &sessions {
-            self.mapping_session
-                .entry(session.session_id.to_string())
-                .or_insert_with(|| cluster.clone());
-        }
 
         self.db
             .call(span.clone(), move |conn| {
@@ -186,7 +180,7 @@ impl Service {
 
         for &session_id in session_ids {
             if let Some(cluster) = self.mapping_session.get(session_id) {
-                match mapping.entry(cluster.clone()) {
+                match mapping.entry(cluster) {
                     std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
                         occupied_entry.get_mut().push(String::from(session_id));
                     }
@@ -200,7 +194,6 @@ impl Service {
         }
 
         if !missing_ids.is_empty() {
-            tracing::error!("SQLITE database and hashmap are not synchronized");
             let name_mapping;
             (name_mapping, missing_ids) = self.db.call(tracing::Span::current(), move |conn| {
                 let mut name_mapping = HashMap::<String, Vec<String>>::new();
@@ -227,7 +220,9 @@ impl Service {
             }).await.map_err(IntoStatus::into_status)?;
 
             for (cluster_name, mut sessions_ids) in name_mapping {
-                match mapping.entry(self.clusters[&cluster_name].clone()) {
+                let cluster = self.clusters[&cluster_name].clone();
+                self.mapping_session.insert(cluster_name, cluster.clone());
+                match mapping.entry(cluster) {
                     std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
                         occupied_entry.get_mut().append(&mut sessions_ids);
                     }
@@ -401,8 +396,7 @@ impl Service {
                                 missing_ids.remove(result.result_id.as_str());
                                 cluster_mapping.push(result.result_id.clone());
                                 self.mapping_result
-                                    .entry(result.result_id.clone())
-                                    .or_insert_with(|| cluster.clone());
+                                    .insert(result.result_id.clone(), cluster.clone());
                             }
                         }
                     }
@@ -515,8 +509,7 @@ impl Service {
                                 missing_ids.remove(task.task_id.as_str());
                                 cluster_mapping.push(task.task_id.clone());
                                 self.mapping_task
-                                    .entry(task.task_id.clone())
-                                    .or_insert_with(|| cluster.clone());
+                                    .insert(task.task_id.clone(), cluster.clone());
                             }
                         }
                     }
