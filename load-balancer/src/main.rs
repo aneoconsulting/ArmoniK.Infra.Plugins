@@ -12,6 +12,9 @@ pub mod ref_guard;
 pub mod service;
 pub mod utils;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ClusterConfig {
     /// Endpoint for sending requests
