@@ -35,6 +35,7 @@ mod versions;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServiceOptions {
+    sqlite_path: Option<String>,
     session_cache_size: usize,
     result_cache_size: usize,
     task_cache_size: usize,
@@ -43,6 +44,7 @@ pub struct ServiceOptions {
 impl Default for ServiceOptions {
     fn default() -> Self {
         Self {
+            sqlite_path: None,
             session_cache_size: 10000,
             result_cache_size: 1000000,
             task_cache_size: 1000000,
@@ -66,14 +68,19 @@ impl Service {
         clusters: impl IntoIterator<Item = (String, Cluster)>,
         options: ServiceOptions,
     ) -> Self {
-        let pool = AsyncPool::new(|| async {
-            Connection::open("file::memory:?cache=shared&psow=1")
-                .await
-                .unwrap()
+        let sqlite_path = options.sqlite_path;
+        let pool = AsyncPool::new(move || {
+            let connection_string = match sqlite_path.as_deref() {
+                None => "file::memory:?cache=shared&psow=1",
+                Some("") => "file:./lb.sqlite?cache=shared",
+                Some(x) => x,
+            }
+            .to_string();
+            async move { Connection::open(connection_string).await.unwrap() }
         });
         pool.execute_batch(
             "BEGIN;
-            CREATE TABLE session(
+            CREATE TABLE IF NOT EXISTS session(
                 session_id TEXT PRIMARY KEY NOT NULL,
                 cluster TEXT NOT NULL,
                 status TINYINT NOT NULL,
@@ -88,15 +95,15 @@ impl Service {
                 deleted_at REAL,
                 duration REAL
             );
-            CREATE INDEX session_status ON session(status);
-            CREATE INDEX session_client_submission ON session(client_submission);
-            CREATE INDEX session_worker_submission ON session(worker_submission);
-            CREATE INDEX session_created_at ON session(created_at);
-            CREATE INDEX session_cancelled_at ON session(cancelled_at);
-            CREATE INDEX session_closed_at ON session(closed_at);
-            CREATE INDEX session_purged_at ON session(purged_at);
-            CREATE INDEX session_deleted_at ON session(deleted_at);
-            CREATE INDEX session_duration ON session(duration);
+            CREATE INDEX IF NOT EXISTS session_status ON session(status);
+            CREATE INDEX IF NOT EXISTS session_client_submission ON session(client_submission);
+            CREATE INDEX IF NOT EXISTS session_worker_submission ON session(worker_submission);
+            CREATE INDEX IF NOT EXISTS session_created_at ON session(created_at);
+            CREATE INDEX IF NOT EXISTS session_cancelled_at ON session(cancelled_at);
+            CREATE INDEX IF NOT EXISTS session_closed_at ON session(closed_at);
+            CREATE INDEX IF NOT EXISTS session_purged_at ON session(purged_at);
+            CREATE INDEX IF NOT EXISTS session_deleted_at ON session(deleted_at);
+            CREATE INDEX IF NOT EXISTS session_duration ON session(duration);
             COMMIT;",
             tracing::trace_span!("create_table"),
         )

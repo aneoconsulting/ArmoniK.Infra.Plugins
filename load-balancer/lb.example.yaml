@@ -26,3 +26,16 @@ listen_ip: 127.0.0.1
 listen_port: 1337
 # Time interval in seconds between session refreshes (default: 10)
 refresh_delay: 60
+# Path to the SQLite database to store all the sessions (default: null)
+# If null, the database will be kept on-memory, and if empty (""), "lb.sqlite" will be used.
+# The path supports the URI syntax: https://www.sqlite.org/uri.html
+sqlite_path: ./sessions.sqlite
+# Number of sessions to keep in the session-cluster mapping cache (default: 10000)
+# As a rule of thumb, a session entry in the cache should takes about a hundred bytes in memory.
+session_cache_size: 50000
+# Number of results to keep in the session-cluster mapping cache (default: 1000000)
+# As a rule of thumb, a result entry in the cache should takes about a hundred bytes in memory.
+result_cache_size: 2000
+# Number of tasks to keep in the session-cluster mapping cache (default: 1000000)
+# As a rule of thumb, a task entry in the cache should takes about a hundred bytes in memory.
+task_cache_size: 3000
