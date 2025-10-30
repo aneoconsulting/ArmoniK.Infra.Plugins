@@ -9,6 +9,7 @@ use std::{
 };
 
 use quick_cache::sync::Cache;
+use serde::{Deserialize, Serialize};
 use sessions::Session;
 use tokio_rusqlite::Connection;
 
@@ -31,6 +32,24 @@ mod submitter;
 mod tasks;
 mod versions;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServiceOptions {
+    session_cache_size: usize,
+    result_cache_size: usize,
+    task_cache_size: usize,
+}
+
+impl Default for ServiceOptions {
+    fn default() -> Self {
+        Self {
+            session_cache_size: 10000,
+            result_cache_size: 1000000,
+            task_cache_size: 1000000,
+        }
+    }
+}
+
 pub struct Service {
     clusters: HashMap<String, Arc<Cluster>>,
     db: AsyncPool<Connection>,
@@ -43,7 +62,10 @@ pub struct Service {
 }
 
 impl Service {
-    pub async fn new(clusters: impl IntoIterator<Item = (String, Cluster)>) -> Self {
+    pub async fn new(
+        clusters: impl IntoIterator<Item = (String, Cluster)>,
+        options: ServiceOptions,
+    ) -> Self {
         let pool = AsyncPool::new(|| async {
             Connection::open("file::memory:?cache=shared&psow=1")
                 .await
@@ -86,9 +108,9 @@ impl Service {
                 .map(|(name, cluster)| (name, Arc::new(cluster)))
                 .collect(),
             db: pool,
-            mapping_session: Cache::new(1000000),
-            mapping_result: Cache::new(10000000),
-            mapping_task: Cache::new(10000000),
+            mapping_session: Cache::new(options.session_cache_size),
+            mapping_result: Cache::new(options.result_cache_size),
+            mapping_task: Cache::new(options.task_cache_size),
             counter: AtomicUsize::new(0),
             result_preferred_size: AtomicI32::new(0),
             submitter_preferred_size: AtomicI32::new(0),
