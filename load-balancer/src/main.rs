@@ -12,6 +12,7 @@ pub mod ref_guard;
 pub mod service;
 pub mod utils;
 
+#[cfg(not(miri))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
