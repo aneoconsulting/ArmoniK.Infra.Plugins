@@ -76,15 +76,9 @@ impl Cluster {
                         );
 
                         let endpoint = self.endpoint.clone();
-
-                        // Somehow, armonik::Client::with_config() is not Send
-                        // So we starting a blocking executor that blocks on the future to ensure it stays on the same thread
-                        tokio::task::spawn_blocking(move || {
-                            futures::executor::block_on(armonik::Client::with_config(endpoint))
-                        })
-                        .await
-                        .unwrap()
-                        .map(|client| reference.insert(client))
+                        armonik::Client::with_config(endpoint)
+                            .await
+                            .map(|client| reference.insert(client))
                     }
                 }
             })

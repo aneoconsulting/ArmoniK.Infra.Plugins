@@ -12,6 +12,10 @@ pub mod ref_guard;
 pub mod service;
 pub mod utils;
 
+#[cfg(not(miri))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ClusterConfig {
     /// Endpoint for sending requests
@@ -64,6 +68,8 @@ pub struct LbConfig {
     pub listen_port: u16,
     #[serde(default)]
     pub refresh_delay: String,
+    #[serde(flatten)]
+    pub service_options: service::ServiceOptions,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Parser)]
@@ -167,6 +173,8 @@ async fn main() -> Result<(), eyre::Report> {
 
     let conf: LbConfig = conf.build()?.try_deserialize()?;
 
+    tracing::trace!("{conf:?}");
+
     let mut clusters = HashMap::with_capacity(conf.clusters.len());
 
     for (name, cluster_config) in conf.clusters {
@@ -179,7 +187,7 @@ async fn main() -> Result<(), eyre::Report> {
         );
     }
 
-    let service = Arc::new(service::Service::new(clusters).await);
+    let service = Arc::new(service::Service::new(clusters, conf.service_options).await);
     let refresh_delay = std::time::Duration::from_secs_f64(conf.refresh_delay.parse()?);
 
     let router = tonic::transport::Server::builder()

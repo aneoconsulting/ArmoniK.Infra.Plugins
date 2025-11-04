@@ -308,7 +308,7 @@ impl SessionsService for Service {
 
         let mut err = None;
 
-        for (cluster_name, cluster) in self.clusters.iter().cycle().skip(i % n).take(n) {
+        for cluster in self.clusters.values().cycle().skip(i % n).take(n) {
             match cluster.client().await {
                 Ok(mut client) => {
                     let span = client.span();
@@ -323,7 +323,7 @@ impl SessionsService for Service {
                             self.add_sessions(
                                 vec![Session {
                                     session_id: response.session_id.clone(),
-                                    cluster: cluster_name.clone(),
+                                    cluster: cluster.name.clone(),
                                     status: armonik::SessionStatus::Running as i32 as u8,
                                     client_submission: true,
                                     worker_submission: true,
@@ -337,7 +337,7 @@ impl SessionsService for Service {
                                     duration: None,
                                 }
                                 .into()],
-                                cluster_name.clone(),
+                                cluster.clone(),
                             )
                             .await?;
                             return Ok(response);
