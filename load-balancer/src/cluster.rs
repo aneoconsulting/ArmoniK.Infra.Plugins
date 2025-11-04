@@ -1,38 +1,42 @@
 use std::{
     hash::Hash,
     ops::{Deref, DerefMut},
-    sync::Arc,
+    ptr::NonNull,
+    sync::atomic::AtomicPtr,
 };
 
 use armonik::reexports::{tokio_stream, tonic};
-use lockfree_object_pool::LinearReusable;
 
-use crate::{
-    async_pool::{AsyncPool, PoolAwaitable},
-    ref_guard::RefGuard,
-};
-
-#[derive(Clone)]
 pub struct Cluster {
     pub name: String,
-    pub endpoint: armonik::ClientConfig,
-    pub pool: Arc<AsyncPool<Option<armonik::Client>>>,
+    pub config: armonik::ClientConfig,
+    pub client: AtomicPtr<armonik::Client>,
+}
+
+impl Drop for Cluster {
+    fn drop(&mut self) {
+        let client = self.client.load(std::sync::atomic::Ordering::Acquire);
+
+        if !client.is_null() {
+            std::mem::drop(unsafe { Box::from_raw(client) });
+        }
+    }
 }
 
 impl std::fmt::Debug for Cluster {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cluster")
             .field("name", &self.name)
-            .field("endpoint", &self.endpoint)
+            .field("config", &self.config)
             .finish()
     }
 }
 
 impl PartialEq for Cluster {
     fn eq(&self, other: &Self) -> bool {
-        self.endpoint.endpoint == other.endpoint.endpoint
-            && self.endpoint.identity == other.endpoint.identity
-            && self.endpoint.override_target == other.endpoint.override_target
+        self.config.endpoint == other.config.endpoint
+            && self.config.identity == other.config.identity
+            && self.config.override_target == other.config.override_target
     }
 }
 
@@ -40,13 +44,13 @@ impl Eq for Cluster {}
 
 impl Hash for Cluster {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.endpoint.endpoint.hash(state);
-        self.endpoint
+        self.config.endpoint.hash(state);
+        self.config
             .identity
             .as_ref()
             .map(|identity| identity.0.as_ref())
             .hash(state);
-        self.endpoint.override_target.hash(state);
+        self.config.override_target.hash(state);
     }
 }
 
@@ -54,67 +58,66 @@ impl Cluster {
     pub fn new(name: String, config: armonik::ClientConfig) -> Self {
         Self {
             name,
-            endpoint: config,
-            pool: Arc::new(AsyncPool::new(|| async { None })),
+            config,
+            client: Default::default(),
         }
     }
 
-    pub async fn client(&self) -> Result<ClusterClient<'_>, armonik::client::ConnectionError> {
+    pub async fn client(&self) -> Result<ClusterClient, armonik::client::ConnectionError> {
         let span = tracing::debug_span!("Cluster", name = self.name);
-        let client = self
-            .pool
-            .pull()
-            .await
-            .map_async(|reference| async move {
-                match reference {
-                    Some(x) => Ok(x),
-                    None => {
-                        tracing::debug!(
-                            "Creating new client for cluster {}: {:?}",
-                            self.name,
-                            self.endpoint
-                        );
 
-                        let endpoint = self.endpoint.clone();
-                        armonik::Client::with_config(endpoint)
-                            .await
-                            .map(|client| reference.insert(client))
+        match NonNull::new(self.client.load(std::sync::atomic::Ordering::Acquire)) {
+            Some(client) => Ok(ClusterClient(unsafe { client.as_ref() }.clone(), span)),
+            None => {
+                let candidate = Box::new(armonik::Client::with_config(self.config.clone()).await?);
+                let candidate = Box::into_raw(candidate);
+                let client = match self.client.compare_exchange(
+                    Default::default(),
+                    candidate,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                ) {
+                    Ok(_) => candidate,
+                    Err(old) => {
+                        // If we failed to put our client in place, we need to drop our version
+                        std::mem::drop(unsafe { Box::from_raw(candidate) });
+                        old
                     }
-                }
-            })
-            .await
-            .into_result()?;
-        Ok(ClusterClient(client, span))
+                };
+
+                Ok(ClusterClient(
+                    unsafe { NonNull::new_unchecked(client).as_ref() }.clone(),
+                    span,
+                ))
+            }
+        }
     }
 }
 
-pub struct ClusterClient<'a>(
-    RefGuard<LinearReusable<'a, PoolAwaitable<Option<armonik::Client>>>, &'a mut armonik::Client>,
-    tracing::Span,
-);
+pub struct ClusterClient(armonik::Client, tracing::Span);
 
-unsafe impl Send for ClusterClient<'_> {}
+unsafe impl Send for ClusterClient {}
 
-impl Deref for ClusterClient<'_> {
+impl Deref for ClusterClient {
     type Target = armonik::Client;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
-impl DerefMut for ClusterClient<'_> {
+impl DerefMut for ClusterClient {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl AsRef<armonik::Client> for ClusterClient<'_> {
+impl AsRef<armonik::Client> for ClusterClient {
     fn as_ref(&self) -> &armonik::Client {
         &self.0
     }
 }
 
-impl ClusterClient<'_> {
+impl ClusterClient {
     pub fn span(&self) -> tracing::Span {
         self.1.clone()
     }
