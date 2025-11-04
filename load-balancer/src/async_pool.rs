@@ -1,5 +1,7 @@
 use std::{
     future::{Future, IntoFuture},
+    hint::unreachable_unchecked,
+    marker::PhantomData,
     pin::Pin,
 };
 
@@ -11,35 +13,21 @@ use crate::ref_guard::RefGuard;
 pub enum PoolAwaitable<T> {
     Pending(Pin<Box<dyn Future<Output = T> + Send + Sync>>),
     Ready(T),
-    Unreachable,
 }
 
-pub enum PoolFuture<'a, T> {
-    Pending(
-        Pin<Box<dyn Future<Output = T> + Send + Sync>>,
-        &'a mut PoolAwaitable<T>,
-    ),
-    Ready(&'a mut T),
-    Unreachable,
-}
+pub struct PoolFuture<'a, T>(*mut PoolAwaitable<T>, PhantomData<&'a mut PoolAwaitable<T>>);
 
 impl<'a, T> IntoFuture for &'a mut PoolAwaitable<T> {
     type Output = &'a mut T;
     type IntoFuture = PoolFuture<'a, T>;
 
     fn into_future(self) -> Self::IntoFuture {
-        match self {
-            PoolAwaitable::Pending(_) => {
-                match std::mem::replace(self, PoolAwaitable::Unreachable) {
-                    PoolAwaitable::Pending(fut) => PoolFuture::Pending(fut, self),
-                    _ => unreachable!(),
-                }
-            }
-            PoolAwaitable::Ready(val) => PoolFuture::Ready(val),
-            PoolAwaitable::Unreachable => unreachable!(),
-        }
+        PoolFuture(self, PhantomData)
     }
 }
+
+unsafe impl<'a, T> Send for PoolFuture<'a, T> where PoolAwaitable<T>: Sync {}
+unsafe impl<'a, T> Sync for PoolFuture<'a, T> where PoolAwaitable<T>: Sync {}
 
 impl<'a, T> Future for PoolFuture<'a, T> {
     type Output = &'a mut T;
@@ -49,22 +37,18 @@ impl<'a, T> Future for PoolFuture<'a, T> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let this = self.get_mut();
-        match std::mem::replace(this, PoolFuture::Unreachable) {
-            PoolFuture::Pending(mut future, awaitable) => match future.as_mut().poll(cx) {
-                std::task::Poll::Ready(val) => {
-                    *awaitable = PoolAwaitable::Ready(val);
-                    match awaitable {
-                        PoolAwaitable::Ready(val) => std::task::Poll::Ready(val),
-                        _ => unreachable!(),
-                    }
-                }
-                std::task::Poll::Pending => {
-                    *this = PoolFuture::Pending(future, awaitable);
-                    std::task::Poll::Pending
-                }
+        match unsafe { &mut *this.0 } {
+            PoolAwaitable::Pending(future) => match future.as_mut().poll(cx) {
+                std::task::Poll::Ready(val) => unsafe {
+                    *this.0 = PoolAwaitable::Ready(val);
+                    let PoolAwaitable::Ready(val) = &mut *this.0 else {
+                        unreachable_unchecked()
+                    };
+                    std::task::Poll::Ready(val)
+                },
+                std::task::Poll::Pending => std::task::Poll::Pending,
             },
-            PoolFuture::Ready(val) => std::task::Poll::Ready(val),
-            PoolFuture::Unreachable => unreachable!(),
+            PoolAwaitable::Ready(val) => std::task::Poll::Ready(val),
         }
     }
 }
