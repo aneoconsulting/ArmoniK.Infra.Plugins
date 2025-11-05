@@ -1,8 +1,6 @@
 use std::{
     hash::Hash,
     ops::{Deref, DerefMut},
-    ptr::NonNull,
-    sync::atomic::AtomicPtr,
 };
 
 use armonik::reexports::{tokio_stream, tonic};
@@ -10,17 +8,7 @@ use armonik::reexports::{tokio_stream, tonic};
 pub struct Cluster {
     pub name: String,
     pub config: armonik::ClientConfig,
-    pub client: AtomicPtr<armonik::Client>,
-}
-
-impl Drop for Cluster {
-    fn drop(&mut self) {
-        let client = self.client.load(std::sync::atomic::Ordering::Acquire);
-
-        if !client.is_null() {
-            std::mem::drop(unsafe { Box::from_raw(client) });
-        }
-    }
+    pub client: async_once_cell::OnceCell<armonik::Client>,
 }
 
 impl std::fmt::Debug for Cluster {
@@ -66,31 +54,11 @@ impl Cluster {
     pub async fn client(&self) -> Result<ClusterClient, armonik::client::ConnectionError> {
         let span = tracing::debug_span!("Cluster", name = self.name);
 
-        match NonNull::new(self.client.load(std::sync::atomic::Ordering::Acquire)) {
-            Some(client) => Ok(ClusterClient(unsafe { client.as_ref() }.clone(), span)),
-            None => {
-                let candidate = Box::new(armonik::Client::with_config(self.config.clone()).await?);
-                let candidate = Box::into_raw(candidate);
-                let client = match self.client.compare_exchange(
-                    Default::default(),
-                    candidate,
-                    std::sync::atomic::Ordering::AcqRel,
-                    std::sync::atomic::Ordering::Acquire,
-                ) {
-                    Ok(_) => candidate,
-                    Err(old) => {
-                        // If we failed to put our client in place, we need to drop our version
-                        std::mem::drop(unsafe { Box::from_raw(candidate) });
-                        old
-                    }
-                };
-
-                Ok(ClusterClient(
-                    unsafe { NonNull::new_unchecked(client).as_ref() }.clone(),
-                    span,
-                ))
-            }
-        }
+        let client = self
+            .client
+            .get_or_try_init(armonik::Client::with_config(self.config.clone()))
+            .await?;
+        Ok(ClusterClient(client.clone(), span))
     }
 }
 

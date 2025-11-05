@@ -20,6 +20,7 @@ tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 mimalloc = { version = "0.1", features = ["v3"] }
 quick_cache = "0.6"
+async-once-cell = "0.5"
 
 [profile.release]
 lto = true
