@@ -92,7 +92,7 @@ RUST_LOG=trace,h2=off,tower=off
 The Load Balancer memory usage comes from the following factors:
 - Number of concurrent connections to the Load Balancer: ~ 20 KB per connection
 - Number of concurrent incoming requests (unary or stream): ~ 10 KB per request + size of the request
-- Number of concurrent outgoing requests (unary or stream): ~ 10 KB per request + size of the request
+- Number of concurrent outgoing requests (unary or stream): ~ 120 KB per request + size of the request
 - Number of entries in the session, task, result caches: ~ 100 B per entry
 - Number of sessions in all the clusters (if the DB is in memory): ~ 1 KB per session
 
@@ -101,19 +101,21 @@ Caches and SQLite database would take `5M * 100B + 3 * 200k * 1KB = 1.1GB`.
 
 Let's now assume we have 10k clients connected simultaneously, each doing 5 `tasks::get` simultaneously repeatedly.
 The size of the request and response are small, so are negligible compared to the 10KB of the stream.
-The server would take `10k * 20KB + 10k * 5 * 10KB = 700MB` in addition to the cache and database usage.
+The server would take `10k * 20KB + 10k * 5 * 120KB = 7.3GB` in addition to the cache and database usage.
 
 We now assume that our 10k clients are doing 5 `tasks::count_status` simultaneously repeatedly.
 The size of the request and response are small, so are negligible compared to the 10KB of the stream.
 However, `tasks::count_status` need to query all the downstream clusters instead of only one,
   so each incoming request leads to 3 out-going requests (one per cluster).
-The server would take `10k * 20KB + 10k * 5 * 3 * 10KB = 1.7GB` in addition to the cache and database usage.
+The server would take `10k * 20KB + 10k * 5 * 3 * 10KB = 19.3GB` in addition to the cache and database usage.
 
 If we are considering that the 10 clients are doing both previous workloads in parallel,
-  the server would take `10k * 20KB + 10k * 5 * 10KB + 10k * 5 * 3 * 10KB = 2.2GB`.
-Adding the cache and database memory usage, we arrive at a grand total of `1.1GB + 2.2GB = 3.3GB`.
+  the server would take `10k * 20KB + 10k * 5 * 10KB + 10k * 5 * 3 * 10KB = 25.3GB`.
+Adding the cache and database memory usage, we arrive at a grand total of `1.1GB + 25.3GB = 26.4GB`.
 
 Of course, the Load Balancer has other memory consumption sources, but for high throughput usage, the rest should be negligible.
+
+Note: The memory usage of an outgoing request is high because it has a dedicated client that could be reused only when the request has been fully processed.
 
 ## CPU usage
 
