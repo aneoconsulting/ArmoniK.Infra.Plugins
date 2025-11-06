@@ -1,4 +1,8 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    sync::Arc,
+};
 
 use armonik::reexports::tonic;
 use clap::Parser;
@@ -20,6 +24,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 pub struct ClusterConfig {
     /// Endpoint for sending requests
     pub endpoint: String,
+    /// Set the cluster as a fallback if no cluster could be matched
+    #[serde(default)]
+    pub fallback: bool,
     /// Path to the certificate file in pem format
     #[serde(default)]
     pub cert_pem: String,
@@ -46,6 +53,7 @@ impl From<ClusterConfig> for armonik::client::ClientConfigArgs {
             ca_cert,
             allow_unsafe_connection,
             override_target_name,
+            ..
         }: ClusterConfig,
     ) -> Self {
         let mut args = armonik::client::ClientConfigArgs::default();
@@ -176,8 +184,12 @@ async fn main() -> Result<(), eyre::Report> {
     tracing::trace!("{conf:?}");
 
     let mut clusters = HashMap::with_capacity(conf.clusters.len());
+    let mut fallbacks = HashSet::new();
 
     for (name, cluster_config) in conf.clusters {
+        if cluster_config.fallback {
+            fallbacks.insert(name.clone());
+        }
         clusters.insert(
             name.clone(),
             cluster::Cluster::new(
@@ -187,7 +199,7 @@ async fn main() -> Result<(), eyre::Report> {
         );
     }
 
-    let service = Arc::new(service::Service::new(clusters, conf.service_options).await);
+    let service = Arc::new(service::Service::new(clusters, fallbacks, conf.service_options).await);
     let refresh_delay = std::time::Duration::from_secs_f64(conf.refresh_delay.parse()?);
 
     let router = tonic::transport::Server::builder()

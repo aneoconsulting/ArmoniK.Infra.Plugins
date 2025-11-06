@@ -54,6 +54,7 @@ impl Default for ServiceOptions {
 
 pub struct Service {
     clusters: HashMap<String, Arc<Cluster>>,
+    fallbacks: HashSet<Arc<Cluster>>,
     db: AsyncPool<Connection>,
     mapping_session: Cache<String, Arc<Cluster>>,
     mapping_result: Cache<String, Arc<Cluster>>,
@@ -66,6 +67,7 @@ pub struct Service {
 impl Service {
     pub async fn new(
         clusters: impl IntoIterator<Item = (String, Cluster)>,
+        fallbacks: impl IntoIterator<Item = String>,
         options: ServiceOptions,
     ) -> Self {
         let sqlite_path = options.sqlite_path;
@@ -109,11 +111,17 @@ impl Service {
         )
         .await
         .unwrap();
+        let clusters = clusters
+            .into_iter()
+            .map(|(name, cluster)| (name, Arc::new(cluster)))
+            .collect::<HashMap<_, _>>();
+        let fallbacks = fallbacks
+            .into_iter()
+            .map(|cluster_name| clusters[&cluster_name].clone())
+            .collect();
         Self {
-            clusters: clusters
-                .into_iter()
-                .map(|(name, cluster)| (name, Arc::new(cluster)))
-                .collect(),
+            clusters,
+            fallbacks,
             db: pool,
             mapping_session: Cache::new(options.session_cache_size),
             mapping_result: Cache::new(options.result_cache_size),
@@ -329,16 +337,32 @@ impl Service {
             }
 
             if !missing_ids.is_empty() {
-                let mut message = String::new();
-                let mut sep = "";
-                for (cluster, error) in errors {
-                    let cluster_name = &cluster.name;
-                    message.push_str(&format!(
-                        "{sep}Error while fetching sessions from cluster {cluster_name}: {error}"
-                    ));
-                    sep = "\n";
+                if self.fallbacks.is_empty() {
+                    let mut message = String::new();
+                    let mut sep = "";
+                    for (cluster, error) in errors {
+                        let cluster_name = &cluster.name;
+                        message.push_str(&format!(
+                            "{sep}Error while fetching sessions from cluster {cluster_name}: {error}"
+                        ));
+                        sep = "\n";
+                    }
+                    return Err(Status::unavailable(message));
                 }
-                return Err(Status::unavailable(message));
+
+                let cluster = self
+                    .fallbacks
+                    .iter()
+                    .nth(
+                        self.counter.load(std::sync::atomic::Ordering::Relaxed)
+                            % self.fallbacks.len(),
+                    )
+                    .unwrap()
+                    .clone();
+                let entry = mapping.entry(cluster.clone()).or_default();
+                for session_id in missing_ids {
+                    entry.push(session_id);
+                }
             }
         }
 
@@ -436,16 +460,32 @@ impl Service {
             }
 
             if !missing_ids.is_empty() {
-                let mut message = String::new();
-                let mut sep = "";
-                for (cluster, error) in errors {
-                    let cluster_name = &cluster.name;
-                    message.push_str(&format!(
-                        "{sep}Error while fetching results from cluster {cluster_name}: {error}"
-                    ));
-                    sep = "\n";
+                if self.fallbacks.is_empty() {
+                    let mut message = String::new();
+                    let mut sep = "";
+                    for (cluster, error) in errors {
+                        let cluster_name = &cluster.name;
+                        message.push_str(&format!(
+                            "{sep}Error while fetching results from cluster {cluster_name}: {error}"
+                        ));
+                        sep = "\n";
+                    }
+                    return Err(Status::unavailable(message));
                 }
-                return Err(Status::unavailable(message));
+
+                let cluster = self
+                    .fallbacks
+                    .iter()
+                    .nth(
+                        self.counter.load(std::sync::atomic::Ordering::Relaxed)
+                            % self.fallbacks.len(),
+                    )
+                    .unwrap()
+                    .clone();
+                let entry = mapping.entry(cluster.clone()).or_default();
+                for result_id in missing_ids {
+                    entry.push(String::from(result_id));
+                }
             }
         }
 
@@ -549,16 +589,32 @@ impl Service {
             }
 
             if !missing_ids.is_empty() {
-                let mut message = String::new();
-                let mut sep = "";
-                for (cluster, error) in errors {
-                    let cluster_name = &cluster.name;
-                    message.push_str(&format!(
-                        "{sep}Error while fetching tasks from cluster {cluster_name}: {error}"
-                    ));
-                    sep = "\n";
+                if self.fallbacks.is_empty() {
+                    let mut message = String::new();
+                    let mut sep = "";
+                    for (cluster, error) in errors {
+                        let cluster_name = &cluster.name;
+                        message.push_str(&format!(
+                            "{sep}Error while fetching tasks from cluster {cluster_name}: {error}"
+                        ));
+                        sep = "\n";
+                    }
+                    return Err(Status::unavailable(message));
                 }
-                return Err(Status::unavailable(message));
+
+                let cluster = self
+                    .fallbacks
+                    .iter()
+                    .nth(
+                        self.counter.load(std::sync::atomic::Ordering::Relaxed)
+                            % self.fallbacks.len(),
+                    )
+                    .unwrap()
+                    .clone();
+                let entry = mapping.entry(cluster.clone()).or_default();
+                for task_id in missing_ids {
+                    entry.push(String::from(task_id));
+                }
             }
         }
 
