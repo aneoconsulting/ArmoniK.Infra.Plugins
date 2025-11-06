@@ -275,6 +275,17 @@ impl Service {
         &self,
         session_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
+        if self.clusters.len() == 1 && self.fallbacks.len() == 1 {
+            let cluster = self.fallbacks.iter().next().unwrap().clone();
+
+            return Ok([(
+                cluster,
+                session_ids.iter().copied().map(String::from).collect(),
+            )]
+            .into_iter()
+            .collect());
+        }
+
         let mut missing_ids = HashSet::new();
         let mut mapping = HashMap::<Arc<Cluster>, Vec<String>>::new();
 
@@ -446,6 +457,17 @@ impl Service {
         &self,
         result_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
+        if self.clusters.len() == 1 && self.fallbacks.len() == 1 {
+            let cluster = self.fallbacks.iter().next().unwrap().clone();
+
+            return Ok([(
+                cluster,
+                result_ids.iter().copied().map(String::from).collect(),
+            )]
+            .into_iter()
+            .collect());
+        }
+
         let mut missing_ids = HashSet::new();
         let mut mapping = HashMap::<Arc<Cluster>, Vec<String>>::new();
 
@@ -569,6 +591,17 @@ impl Service {
         &self,
         task_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
+        if self.clusters.len() == 1 && self.fallbacks.len() == 1 {
+            let cluster = self.fallbacks.iter().next().unwrap().clone();
+
+            return Ok([(
+                cluster,
+                task_ids.iter().copied().map(String::from).collect(),
+            )]
+            .into_iter()
+            .collect());
+        }
+
         let mut missing_ids = HashSet::new();
         let mut mapping = HashMap::<Arc<Cluster>, Vec<String>>::new();
 
