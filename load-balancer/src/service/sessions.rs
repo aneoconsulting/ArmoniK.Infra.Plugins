@@ -234,7 +234,7 @@ impl SessionsService for Service {
             .db
             .call(tracing::trace_span!("transaction"), move |conn| {
                 let mut sessions = Vec::<armonik::sessions::Raw>::new();
-                let transaction = conn.transaction()?;
+                let transaction = conn.unchecked_transaction()?;
 
                 let count_span = tracing::trace_span!("count");
                 let total =

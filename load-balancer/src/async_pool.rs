@@ -6,7 +6,6 @@ use std::{
 };
 
 use lockfree_object_pool::{LinearObjectPool, LinearReusable};
-use tokio_rusqlite::{Connection, Params};
 
 use crate::ref_guard::RefGuard;
 
@@ -26,8 +25,8 @@ impl<'a, T> IntoFuture for &'a mut PoolAwaitable<T> {
     }
 }
 
-unsafe impl<'a, T> Send for PoolFuture<'a, T> where PoolAwaitable<T>: Sync {}
-unsafe impl<'a, T> Sync for PoolFuture<'a, T> where PoolAwaitable<T>: Sync {}
+unsafe impl<T> Send for PoolFuture<'_, T> where PoolAwaitable<T>: Sync {}
+unsafe impl<T> Sync for PoolFuture<'_, T> where PoolAwaitable<T>: Sync {}
 
 impl<'a, T> Future for PoolFuture<'a, T> {
     type Output = &'a mut T;
@@ -70,40 +69,5 @@ impl<T> AsyncPool<T> {
 
     pub async fn pull(&self) -> RefGuard<LinearReusable<'_, PoolAwaitable<T>>, &mut T> {
         RefGuard::new_deref_mut(self.0.pull()).map_await().await
-    }
-}
-
-impl AsyncPool<Connection> {
-    pub async fn execute_batch(
-        &self,
-        sql: &str,
-        span: tracing::Span,
-    ) -> Result<(), rusqlite::Error> {
-        let sql = sql.to_owned();
-        self.call(span, move |conn| conn.execute_batch(&sql)).await
-    }
-    pub async fn execute(
-        &self,
-        sql: &str,
-        params: impl Params + Send + 'static,
-        span: tracing::Span,
-    ) -> Result<usize, rusqlite::Error> {
-        let sql = sql.to_owned();
-        self.call(span, move |conn| conn.execute(&sql, params))
-            .await
-    }
-
-    pub async fn call<Out: Send + 'static>(
-        &self,
-        span: tracing::Span,
-        f: impl FnOnce(&mut rusqlite::Connection) -> Out + Send + 'static,
-    ) -> Out {
-        self.pull()
-            .await
-            .call_unwrap(|conn| {
-                let _entered = span.entered();
-                f(conn)
-            })
-            .await
     }
 }

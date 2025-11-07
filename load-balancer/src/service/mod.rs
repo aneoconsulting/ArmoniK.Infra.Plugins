@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    ops::Deref,
     sync::{
         atomic::{AtomicI32, AtomicUsize},
         Arc,
@@ -11,12 +12,11 @@ use std::{
 use quick_cache::sync::Cache;
 use serde::{Deserialize, Serialize};
 use sessions::Session;
-use tokio_rusqlite::Connection;
 
 use armonik::reexports::{tokio_stream::StreamExt, tonic::Status, tracing_futures::Instrument};
+use thread_local::ThreadLocal;
 
 use crate::{
-    async_pool::AsyncPool,
     cluster::Cluster,
     utils::{merge_streams, IntoStatus},
 };
@@ -54,7 +54,7 @@ impl Default for ServiceOptions {
 
 pub struct Service {
     clusters: HashMap<String, Arc<Cluster>>,
-    db: AsyncPool<Connection>,
+    db: DB,
     mapping_session: Cache<String, Arc<Cluster>>,
     mapping_result: Cache<String, Arc<Cluster>>,
     mapping_task: Cache<String, Arc<Cluster>>,
@@ -63,22 +63,85 @@ pub struct Service {
     submitter_preferred_size: AtomicI32,
 }
 
+#[derive(Clone)]
+pub struct DB {
+    connection: Arc<ThreadLocal<rusqlite::Connection>>,
+    path: String,
+}
+
+impl DB {
+    fn new(path: Option<&str>) -> Self {
+        let connection_string = match path {
+            None => "file::memory:?cache=shared&psow=1",
+            Some("") => "file:./lb.sqlite?cache=shared",
+            Some(x) => x,
+        };
+
+        Self {
+            connection: Default::default(),
+            path: String::from(connection_string),
+        }
+    }
+
+    fn connection(&self) -> &rusqlite::Connection {
+        self.connection
+            .get_or(|| rusqlite::Connection::open(&self.path).unwrap())
+    }
+
+    pub async fn execute_batch(
+        &self,
+        sql: &str,
+        span: tracing::Span,
+    ) -> Result<(), rusqlite::Error> {
+        let sql = sql.to_owned();
+        self.call(span, move |db| db.connection().execute_batch(&sql))
+            .await
+    }
+    pub async fn execute(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params + Send + Sync + 'static,
+        span: tracing::Span,
+    ) -> Result<usize, rusqlite::Error> {
+        let sql = sql.to_owned();
+        self.call(span, move |db| db.connection().execute(&sql, params))
+            .await
+    }
+
+    pub async fn call<Out, F>(&self, span: tracing::Span, f: F) -> Out
+    where
+        Out: Send + 'static,
+        F: FnOnce(&DB) -> Out,
+        F: Send + Sync + 'static,
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let this: DB = self.clone();
+
+        rayon::spawn(move || {
+            let _entered = span.entered();
+            _ = tx.send(f(&this));
+        });
+
+        rx.await.unwrap()
+    }
+}
+
+impl Deref for DB {
+    type Target = rusqlite::Connection;
+
+    fn deref(&self) -> &Self::Target {
+        self.connection()
+    }
+}
+
 impl Service {
     pub async fn new(
         clusters: impl IntoIterator<Item = (String, Cluster)>,
         options: ServiceOptions,
     ) -> Self {
         let sqlite_path = options.sqlite_path;
-        let pool = AsyncPool::new(move || {
-            let connection_string = match sqlite_path.as_deref() {
-                None => "file::memory:?cache=shared&psow=1",
-                Some("") => "file:./lb.sqlite?cache=shared",
-                Some(x) => x,
-            }
-            .to_string();
-            async move { Connection::open(connection_string).await.unwrap() }
-        });
-        pool.execute_batch(
+        let db = DB::new(sqlite_path.as_deref());
+        db.execute_batch(
             "BEGIN;
             CREATE TABLE IF NOT EXISTS session(
                 session_id TEXT PRIMARY KEY NOT NULL,
@@ -114,7 +177,7 @@ impl Service {
                 .into_iter()
                 .map(|(name, cluster)| (name, Arc::new(cluster)))
                 .collect(),
-            db: pool,
+            db,
             mapping_session: Cache::new(options.session_cache_size),
             mapping_result: Cache::new(options.result_cache_size),
             mapping_task: Cache::new(options.task_cache_size),
