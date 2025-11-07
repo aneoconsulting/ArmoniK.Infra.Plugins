@@ -1,38 +1,111 @@
 use std::{
     hash::Hash,
+    num::NonZeroUsize,
     ops::{Deref, DerefMut},
-    sync::Arc,
 };
 
 use armonik::reexports::{tokio_stream, tonic};
-use lockfree_object_pool::LinearReusable;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{Semaphore, SemaphorePermit};
 
-use crate::{
-    async_pool::{AsyncPool, PoolAwaitable},
-    ref_guard::RefGuard,
-};
+use crate::bag::Bag;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ClientConfig {
+    /// Endpoint for sending requests
+    pub endpoint: String,
+    /// Path to the certificate file in pem format
+    #[serde(default)]
+    pub cert_pem: String,
+    /// Path to the key file in pem format
+    #[serde(default)]
+    pub key_pem: String,
+    /// Path to the Certificate Authority file in pem format
+    #[serde(default)]
+    pub ca_cert: String,
+    /// Allow unsafe connections to the endpoint (without SSL), defaults to false
+    #[serde(default)]
+    pub allow_unsafe_connection: bool,
+    /// Override the endpoint name during SSL verification
+    #[serde(default)]
+    pub override_target_name: String,
+}
+
+impl From<ClientConfig> for armonik::client::ClientConfigArgs {
+    fn from(
+        ClientConfig {
+            endpoint,
+            cert_pem,
+            key_pem,
+            ca_cert,
+            allow_unsafe_connection,
+            override_target_name,
+            ..
+        }: ClientConfig,
+    ) -> Self {
+        let mut args = armonik::client::ClientConfigArgs::default();
+        args.endpoint = endpoint;
+        args.cert_pem = cert_pem;
+        args.key_pem = key_pem;
+        args.ca_cert = ca_cert;
+        args.allow_unsafe_connection = allow_unsafe_connection;
+        args.override_target_name = override_target_name;
+        args
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ClusterConfig<C = armonik::ClientConfig> {
+    #[serde(flatten)]
+    pub client: C,
+    /// Size of the connection pool to this cluster
+    #[serde(default)]
+    pub pool_size: Option<usize>,
+    /// Number of requests sent on a connection before it is recreated
+    #[serde(default)]
+    pub requests_per_connection: Option<usize>,
+    /// Whether a connection can process mutliple requests simultaneously
+    #[serde(default)]
+    pub multiplex: bool,
+}
+
+impl<C> ClusterConfig<C> {
+    pub fn try_map_client<T, E>(
+        self,
+        f: impl FnOnce(C) -> Result<T, E>,
+    ) -> Result<ClusterConfig<T>, E> {
+        Ok(ClusterConfig {
+            client: f(self.client)?,
+            pool_size: self.pool_size,
+            requests_per_connection: self.requests_per_connection,
+            multiplex: self.multiplex,
+        })
+    }
+}
+
 pub struct Cluster {
     pub name: String,
-    pub endpoint: armonik::ClientConfig,
-    pub pool: Arc<AsyncPool<Option<armonik::Client>>>,
+    pub config: armonik::ClientConfig,
+    pub client: Bag<(armonik::Client, Option<NonZeroUsize>)>,
+    pub requests_per_connection: Option<NonZeroUsize>,
+    pub semaphore: Option<Semaphore>,
+    pub multiplex: bool,
 }
 
 impl std::fmt::Debug for Cluster {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cluster")
             .field("name", &self.name)
-            .field("endpoint", &self.endpoint)
+            .field("config", &self.config)
             .finish()
     }
 }
 
 impl PartialEq for Cluster {
     fn eq(&self, other: &Self) -> bool {
-        self.endpoint.endpoint == other.endpoint.endpoint
-            && self.endpoint.identity == other.endpoint.identity
-            && self.endpoint.override_target == other.endpoint.override_target
+        self.config.endpoint == other.config.endpoint
+            && self.config.identity == other.config.identity
+            && self.config.override_target == other.config.override_target
     }
 }
 
@@ -40,83 +113,111 @@ impl Eq for Cluster {}
 
 impl Hash for Cluster {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.endpoint.endpoint.hash(state);
-        self.endpoint
+        self.config.endpoint.hash(state);
+        self.config
             .identity
             .as_ref()
             .map(|identity| identity.0.as_ref())
             .hash(state);
-        self.endpoint.override_target.hash(state);
+        self.config.override_target.hash(state);
     }
 }
 
 impl Cluster {
-    pub fn new(name: String, config: armonik::ClientConfig) -> Self {
+    pub fn new(name: String, config: ClusterConfig) -> Self {
         Self {
             name,
-            endpoint: config,
-            pool: Arc::new(AsyncPool::new(|| async { None })),
+            config: config.client,
+            client: Default::default(),
+            requests_per_connection: NonZeroUsize::new(
+                config.requests_per_connection.unwrap_or(800),
+            ),
+            semaphore: NonZeroUsize::new(
+                config
+                    .pool_size
+                    .unwrap_or(4 * tokio::runtime::Handle::current().metrics().num_workers()),
+            )
+            .map(|size| Semaphore::new(size.get())),
+            multiplex: config.multiplex,
         }
     }
 
     pub async fn client(&self) -> Result<ClusterClient<'_>, armonik::client::ConnectionError> {
-        let span = tracing::debug_span!("Cluster", name = self.name);
-        let client = self
-            .pool
-            .pull()
-            .await
-            .map_async(|reference| async move {
-                match reference {
-                    Some(x) => Ok(x),
-                    None => {
-                        tracing::debug!(
-                            "Creating new client for cluster {}: {:?}",
-                            self.name,
-                            self.endpoint
-                        );
+        let permit = match &self.semaphore {
+            Some(semaphore) => Some(semaphore.acquire().await.unwrap()),
+            None => None,
+        };
+        let (client, requests) = match self.client.pop() {
+            Some(client) => client,
+            None => {
+                let client = armonik::Client::with_config(self.config.clone()).await?;
+                (client, self.requests_per_connection)
+            }
+        };
 
-                        let endpoint = self.endpoint.clone();
-                        armonik::Client::with_config(endpoint)
-                            .await
-                            .map(|client| reference.insert(client))
-                    }
-                }
-            })
-            .await
-            .into_result()?;
-        Ok(ClusterClient(client, span))
+        let mut client = ClusterClient {
+            client,
+            requests,
+            bag: &self.client,
+            permit,
+            span: tracing::debug_span!("Cluster", name = self.name),
+        };
+
+        if self.multiplex {
+            client.release();
+        }
+
+        Ok(client)
     }
 }
 
-pub struct ClusterClient<'a>(
-    RefGuard<LinearReusable<'a, PoolAwaitable<Option<armonik::Client>>>, &'a mut armonik::Client>,
-    tracing::Span,
-);
-
-unsafe impl Send for ClusterClient<'_> {}
+pub struct ClusterClient<'a> {
+    client: armonik::Client,
+    requests: Option<NonZeroUsize>,
+    bag: &'a Bag<(armonik::Client, Option<NonZeroUsize>)>,
+    permit: Option<SemaphorePermit<'a>>,
+    span: tracing::Span,
+}
 
 impl Deref for ClusterClient<'_> {
     type Target = armonik::Client;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.client
     }
 }
 impl DerefMut for ClusterClient<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.client
     }
 }
 
 impl AsRef<armonik::Client> for ClusterClient<'_> {
     fn as_ref(&self) -> &armonik::Client {
-        &self.0
+        &self.client
+    }
+}
+
+impl Drop for ClusterClient<'_> {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 
 impl ClusterClient<'_> {
     pub fn span(&self) -> tracing::Span {
-        self.1.clone()
+        self.span.clone()
+    }
+    fn release(&mut self) {
+        match self.requests {
+            Some(size) => {
+                if let Some(size) = NonZeroUsize::new(size.get() - 1) {
+                    self.bag.push((self.client.clone(), Some(size)));
+                }
+            }
+            None => self.bag.push((self.client.clone(), None)),
+        }
+        std::mem::drop(self.permit.take());
     }
     pub async fn get_all_sessions(
         &mut self,

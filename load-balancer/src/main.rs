@@ -6,9 +6,8 @@ use serde::{Deserialize, Serialize};
 use tracing as _;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-pub mod async_pool;
+pub mod bag;
 pub mod cluster;
-pub mod ref_guard;
 pub mod service;
 pub mod utils;
 
@@ -16,52 +15,9 @@ pub mod utils;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ClusterConfig {
-    /// Endpoint for sending requests
-    pub endpoint: String,
-    /// Path to the certificate file in pem format
-    #[serde(default)]
-    pub cert_pem: String,
-    /// Path to the key file in pem format
-    #[serde(default)]
-    pub key_pem: String,
-    /// Path to the Certificate Authority file in pem format
-    #[serde(default)]
-    pub ca_cert: String,
-    /// Allow unsafe connections to the endpoint (without SSL), defaults to false
-    #[serde(default)]
-    pub allow_unsafe_connection: bool,
-    /// Override the endpoint name during SSL verification
-    #[serde(default)]
-    pub override_target_name: String,
-}
-
-impl From<ClusterConfig> for armonik::client::ClientConfigArgs {
-    fn from(
-        ClusterConfig {
-            endpoint,
-            cert_pem,
-            key_pem,
-            ca_cert,
-            allow_unsafe_connection,
-            override_target_name,
-        }: ClusterConfig,
-    ) -> Self {
-        let mut args = armonik::client::ClientConfigArgs::default();
-        args.endpoint = endpoint;
-        args.cert_pem = cert_pem;
-        args.key_pem = key_pem;
-        args.ca_cert = ca_cert;
-        args.allow_unsafe_connection = allow_unsafe_connection;
-        args.override_target_name = override_target_name;
-        args
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LbConfig {
-    pub clusters: HashMap<String, ClusterConfig>,
+    pub clusters: HashMap<String, cluster::ClusterConfig<cluster::ClientConfig>>,
     #[serde(default)]
     pub listen_ip: String,
     #[serde(default)]
@@ -182,7 +138,9 @@ async fn main() -> Result<(), eyre::Report> {
             name.clone(),
             cluster::Cluster::new(
                 name,
-                armonik::ClientConfig::from_config_args(cluster_config.into())?,
+                cluster_config.try_map_client(|client_config| {
+                    armonik::ClientConfig::from_config_args(client_config.into())
+                })?,
             ),
         );
     }
