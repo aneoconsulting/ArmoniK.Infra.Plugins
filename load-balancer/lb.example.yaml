@@ -20,7 +20,8 @@ clusters:
     # Number of requests sent on a connection before it is recreated (default: 800)
     # Set to 0 to disable the limit.
     requests_per_connection: 0
-    # Whether a connection can process mutliple requests simultaneously (default: false)
+    # Whether a connection can process multiple requests simultaneously (default: false)
+    # If the upstream cluster requests the connection closure regularly (like nginx), it is recommended to keep it disabled.
     multiplex: true
 
   # configuration for the cluster called "local"
