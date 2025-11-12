@@ -150,8 +150,7 @@ async fn main() -> Result<(), eyre::Report> {
 
     let router = tonic::transport::Server::builder()
         .trace_fn(|r| tracing::info_span!("gRPC", "path" = r.uri().path()))
-        .concurrency_limit_per_connection(1024)
-        .http2_max_pending_accept_reset_streams(Some(2048))
+        .http2_max_pending_accept_reset_streams(Some(65536))
         .add_service(
             armonik::api::v3::applications::applications_server::ApplicationsServer::from_arc(
                 service.clone(),
