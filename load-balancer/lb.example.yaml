@@ -4,6 +4,8 @@ clusters:
   remote:
     # Endpoint of the cluster
     endpoint: https://93.184.215.14:5001/
+    # Set the cluster as a fallback if no cluster could be matched
+    fallback: false
     # Path to the client certificate
     cert_pem:
     # Path to the client certificate's private key
