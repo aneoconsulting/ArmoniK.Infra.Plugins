@@ -74,6 +74,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // crossbeam-epoch is currently incompatible with MIRI: https://github.com/crossbeam-rs/crossbeam/issues/1181
     fn foo() {
         let bag = Bag::new();
         bag.push(1);
