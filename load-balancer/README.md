@@ -85,35 +85,45 @@ RUST_LOG=info,armonik=debug,load_balancer=debug
 RUST_LOG=trace,h2=off,tower=off
 ```
 
-# Resource usage
+# Resource usage and limits
 
-## Memory usage
+## Inbound connections
 
-The Load Balancer memory usage comes from the following factors:
-- Number of concurrent connections to the Load Balancer: ~ 20 KB per connection
-- Number of concurrent incoming requests (unary or stream): ~ 10 KB per request + size of the request
-- Number of concurrent outgoing requests (unary or stream): ~ 10 KB per request + size of the request
-- Number of entries in the session, task, result caches: ~ 100 B per entry
-- Number of sessions in all the clusters (if the DB is in memory): ~ 1 KB per session
+The main limiting factor for the number of inbound connections is the number of opened file descriptors.
+The default value on Linux is usually 1024 per process, and can be modified using `ulimit -n`.
 
-For instance, let's assume we have 3 clusters, each with 200k sesssions, and 5M entries in the caches.
-Caches and SQLite database would take `5M * 100B + 3 * 200k * 1KB = 1.1GB`.
+If `ulimit` has been raised accordingly and there is enough memory available,
+  it is possible to achieve more than 20k connections on a single Load Balancer instance.
+If you need to handle more connections, you can spawn multiple instances of the Load Balancer.
 
-Let's now assume we have 10k clients connected simultaneously, each doing 5 `tasks::get` simultaneously repeatedly.
-The size of the request and response are small, so are negligible compared to the 10KB of the stream.
-The server would take `10k * 20KB + 10k * 5 * 10KB = 700MB` in addition to the cache and database usage.
 
-We now assume that our 10k clients are doing 5 `tasks::count_status` simultaneously repeatedly.
-The size of the request and response are small, so are negligible compared to the 10KB of the stream.
-However, `tasks::count_status` need to query all the downstream clusters instead of only one,
-  so each incoming request leads to 3 out-going requests (one per cluster).
-The server would take `10k * 20KB + 10k * 5 * 3 * 10KB = 1.7GB` in addition to the cache and database usage.
+## Outbound connections
 
-If we are considering that the 10 clients are doing both previous workloads in parallel,
-  the server would take `10k * 20KB + 10k * 5 * 10KB + 10k * 5 * 3 * 10KB = 2.2GB`.
-Adding the cache and database memory usage, we arrive at a grand total of `1.1GB + 2.2GB = 3.3GB`.
+Likewise, outbound connections are also limited by the number of opened file descriptors.
+Inbound and outbound connections both contribute to the usage of file descriptors, and so the limit should account for both inbound and outbound.
 
-Of course, the Load Balancer has other memory consumption sources, but for high throughput usage, the rest should be negligible.
+In addition, the number of outbound connections is also limited by the number of inbound connections of the upstream cluster behind.
+If the upstream limit is known, it is recommended to configure the Load Balancer and set the pool size for the cluster lower than its actual limit to avoid errors.
+
+On an upstream cluster without limits, it is possible to achieve more than 20k connections opened concurrently.
+
+## Ingoing requests and streams
+
+There is no limit on the number of simultaneous requests or streams that a Load Balancer instance can process.
+It is possible to achieve more than 100k streams opened on the same connection.
+
+## Outgoing requests and streams
+
+While there is no theoretical limit on the number of outgoing requests that can be on-flight simultaneously, the upstream cluster behind does have limits.
+If multiplexing is disabled, the number of simultaneous outgoing requests is limited by the configured number of outbound connections.
+Otherwise, there is no limit on the number of simultaneous outgoing requests.
+
+It is recommended to configure the Load Balancer with limits lower than what the upstream cluster can support to avoid errors.
+Especially, if the upstream has an nginx ingress, request multiplexing should be disabled,
+  and number of requests per connection should be lower than the corresponding parameter on nginx side.
+By default, the Load Balancer configuration is compatible with the default configuration of nginx.
+
+On an upstream cluster without limits, it is possible to achieve more than 100k streams opened concurrently.
 
 ## CPU usage
 
@@ -122,17 +132,34 @@ Consequently, a rule of thumb for the Load Balancer sizing is to allocate 1 core
 In other words, if each LB instance is configured with the same number of cores as each control plane instance,
   you should have 1 LB instance per 4 control plane instance.
 
-## Connection Limits
+## Memory usage
 
-Apart from the memory usage of a connection, the Load Balancer is constrained by OS limits.
-Especially, the number of connections is limited by the number of opened file descriptors.
-The default value on Linux is usually 1024 per process, and can be modified using `ulimit -n`.
+The Load Balancer memory usage comes from the following factors:
+- Number of concurrent inbound connections to the Load Balancer: ~ 20 KB per connection
+- Number of concurrent outbound connections to the Load Balancer: ~ 110 KB per connection
+- Number of concurrent ingoing requests (unary or stream): ~ 10 KB per request + size of the request
+- Number of concurrent outgoing requests (unary or stream): ~ 10 KB per request + size of the request
+- Number of entries in the session, task, result caches: ~ 100 B per entry
+- Number of sessions in all the clusters (if the DB is in memory): ~ 1 KB per session
 
-If `ulimit` has been raised accordingly and there is enough memory available,
-  it is possible to achieve more than 20k connections on a single Load Balancer instance.
-If you need to handle more connections, you can spawn multiple instances of the Load Balancer.
+For instance, let's assume we have 3 clusters, each with 200k sesssions, and 5M entries in the caches.
+Caches and SQLite database would take `5M * 100B + 3 * 200k * 1KB = 1.1GB`.
 
-## Stream limits
+Let's now assume we have 10k clients connected simultaneously, each doing 5 `tasks::get` simultaneously repeatedly.
+Each cluster is configured with a pool size of 1k connections, with multiplexing enabled.
+The size of the request and response are small, so are negligible compared to the 10KB of the stream.
+The server would take `10k * 20KB + 1k * 110KB + 10k * 5 * 10KB + 10k * 5 * 10KB = 1.3GB` in addition to the cache and database usage.
+If multiplexing was disabled, the number of simultaneous outgoing request would be limited by the number of connections instead:
+  `10k * 20KB + 1k * 110KB + 10k * 5 * 10KB + 1k * 10KB = 820MB`.
 
-There is no known limitation on the number of opened streams on the Load Balancer, apart from the memory consumption.
-It is possible to achieve 100k concurrent streams on a single instance, either from a single connection, or across thousands of connections.
+We now assume that our 10k clients are doing 5 `tasks::count_status` simultaneously repeatedly.
+The size of the request and response are small, so are negligible compared to the 10KB of the stream.
+However, `tasks::count_status` need to query all the downstream clusters instead of only one,
+  so each incoming request leads to 3 out-going requests (one per cluster).
+The server would take `10k * 20KB + 1k * 3 * 110KB + 10k * 5 * 10KB + 10k * 3 * 5 * 10KB = 2.5GB` in addition to the cache and database usage.
+
+If we are considering that the 10 clients are doing both previous workloads in parallel,
+  the server would take `10k * 20KB + 1k * 3 * 110KB + 10k * 2 * 5 * 10KB + 10k * 4 * 5 * 10KB = 3.5GB`.
+Adding the cache and database memory usage, we arrive at a grand total of `1.1GB + 3.3GB = 4.6GB`.
+
+Of course, the Load Balancer has other memory consumption sources, but for high throughput usage, the rest should be negligible.
