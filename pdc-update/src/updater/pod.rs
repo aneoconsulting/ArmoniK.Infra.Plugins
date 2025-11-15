@@ -1,4 +1,4 @@
-use json_patch::{AddOperation, PatchOperation};
+use json_patch::{jsonptr::PointerBuf, AddOperation, PatchOperation};
 use k8s_openapi::api::core::v1::Pod;
 use kube::{api::PatchParams, Api};
 
@@ -41,7 +41,7 @@ impl WorkerUpdater for PodUpdater {
         log::debug!("Update pod {name} with cost {cost}");
 
         let patch = PatchOperation::Add(AddOperation {
-            path: "/metadata/annotations".to_owned(),
+            path: PointerBuf::parse("/metadata/annotations")?,
             value: serde_json::json!({
                 "controller.kubernetes.io/pod-deletion-cost": cost.to_string(),
             }),

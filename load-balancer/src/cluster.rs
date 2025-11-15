@@ -11,50 +11,6 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 use crate::bag::Bag;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ClientConfig {
-    /// Endpoint for sending requests
-    pub endpoint: String,
-    /// Path to the certificate file in pem format
-    #[serde(default)]
-    pub cert_pem: String,
-    /// Path to the key file in pem format
-    #[serde(default)]
-    pub key_pem: String,
-    /// Path to the Certificate Authority file in pem format
-    #[serde(default)]
-    pub ca_cert: String,
-    /// Allow unsafe connections to the endpoint (without SSL), defaults to false
-    #[serde(default)]
-    pub allow_unsafe_connection: bool,
-    /// Override the endpoint name during SSL verification
-    #[serde(default)]
-    pub override_target_name: String,
-}
-
-impl From<ClientConfig> for armonik::client::ClientConfigArgs {
-    fn from(
-        ClientConfig {
-            endpoint,
-            cert_pem,
-            key_pem,
-            ca_cert,
-            allow_unsafe_connection,
-            override_target_name,
-            ..
-        }: ClientConfig,
-    ) -> Self {
-        let mut args = armonik::client::ClientConfigArgs::default();
-        args.endpoint = endpoint;
-        args.cert_pem = cert_pem;
-        args.key_pem = key_pem;
-        args.ca_cert = ca_cert;
-        args.allow_unsafe_connection = allow_unsafe_connection;
-        args.override_target_name = override_target_name;
-        args
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ClusterConfig<C = armonik::ClientConfig> {
     #[serde(flatten)]
     pub client: C,

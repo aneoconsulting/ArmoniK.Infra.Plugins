@@ -17,7 +17,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LbConfig {
-    pub clusters: HashMap<String, cluster::ClusterConfig<cluster::ClientConfig>>,
+    pub clusters: HashMap<String, cluster::ClusterConfig<armonik::client::ClientConfigArgs>>,
     #[serde(default)]
     pub listen_ip: String,
     #[serde(default)]
@@ -138,9 +138,7 @@ async fn main() -> Result<(), eyre::Report> {
             name.clone(),
             cluster::Cluster::new(
                 name,
-                cluster_config.try_map_client(|client_config| {
-                    armonik::ClientConfig::from_config_args(client_config.into())
-                })?,
+                cluster_config.try_map_client(armonik::ClientConfig::from_config_args)?,
             ),
         );
     }
