@@ -98,6 +98,7 @@ dependencies = [
  "prost",
  "prost-types",
  "rustls",
+ "serde",
  "snafu",
  "tokio",
  "tonic",
