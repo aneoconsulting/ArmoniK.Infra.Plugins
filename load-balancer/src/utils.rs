@@ -15,27 +15,50 @@ macro_rules! impl_unary {
 
     ($self:ident.$service:ident, $request:ident, {$get_cluster:ident, $id:ident, $msg:literal}) => {
         {
-            let Some(cluster) = $self.$get_cluster(&$request.$id).await? else {
-                return Err(tonic::Status::not_found(format!(
+            let Some(cluster) = crate::utils::try_rpc!(try $self.$get_cluster(&$request.$id).await) else {
+                crate::utils::try_rpc!(bail tonic::Status::not_found(format!(
                     $msg,
                     $request.$id
                 )));
             };
 
-            let mut client = cluster
+            let mut client = crate::utils::try_rpc!(try cluster
                 .client()
-                .await
-                .map_err(crate::utils::IntoStatus::into_status)?;
+                .await);
             let span = client.span();
-            client.$service()
+            crate::utils::try_rpc!(map client.$service()
                 .call($request)
                 .instrument(span)
-                .await
-                .map_err(crate::utils::IntoStatus::into_status)
+                .await)
         }
     };
 }
 pub(crate) use impl_unary;
+
+macro_rules! try_rpc {
+    (try $res:expr) => {
+        match $res {
+            Ok(result) => result,
+            Err(err) => crate::utils::try_rpc!(bail err),
+        }
+    };
+    (bail $err:expr) => {
+        return Err(crate::utils::try_rpc!(warn $err))
+    };
+    (map $res:expr) => {
+        match $res {
+            Ok(result) => Result::<_, armonik::reexports::tonic::Status>::Ok(result),
+            Err(err) => Err(crate::utils::try_rpc!(warn err)),
+        }
+    };
+    (warn $err:expr) => {{
+        let err = crate::utils::IntoStatus::into_status($err);
+        tracing::warn!("{:?}: {}", err.code(), err.message());
+        err
+    }};
+}
+
+pub(crate) use try_rpc;
 
 pub trait IntoStatus {
     fn into_status(self) -> Status;
@@ -71,6 +94,12 @@ impl IntoStatus for armonik::client::ReadEnvError {
 impl IntoStatus for rusqlite::Error {
     fn into_status(self) -> Status {
         Status::failed_precondition(self.to_string())
+    }
+}
+
+impl IntoStatus for Status {
+    fn into_status(self) -> Status {
+        self
     }
 }
 

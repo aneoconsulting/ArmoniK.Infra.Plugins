@@ -9,7 +9,7 @@ use futures::stream::FuturesUnordered;
 
 use crate::{
     cluster::Cluster,
-    utils::{IntoStatus, RecoverableResult},
+    utils::{try_rpc, IntoStatus, RecoverableResult},
 };
 
 use super::Service;
@@ -55,7 +55,9 @@ impl Service {
             }
 
             if !has_check {
-                return Err(armonik::reexports::tonic::Status::invalid_argument(String::from("Cannot determine the cluster from the filter, missing condition on session_id")));
+                try_rpc!(bail tonic::Status::invalid_argument(
+                    "Cannot determine the cluster from the filter, missing condition on session_id"
+                ));
             }
         }
 
@@ -64,7 +66,10 @@ impl Service {
             self.get_cluster_from_tasks(&requested_tasks)
         );
 
-        let (mut sessions, mut tasks) = (sessions?.into_iter(), results?.into_iter());
+        let (mut sessions, mut tasks) = (
+            try_rpc!(try sessions).into_iter(),
+            try_rpc!(try results).into_iter(),
+        );
 
         let cluster = match (sessions.next(), tasks.next()) {
             (None, None) => {
@@ -74,7 +79,7 @@ impl Service {
             (Some(ses_cluster), None) => ses_cluster.0,
             (Some(ses_cluster), Some(task_cluster)) => {
                 if task_cluster != ses_cluster {
-                    return Err(tonic::Status::invalid_argument(
+                    try_rpc!(bail tonic::Status::invalid_argument(
                         "Cannot determine the cluster from the filter, multiple clusters targeted",
                     ));
                 }
@@ -83,7 +88,7 @@ impl Service {
         };
         match (sessions.next(), tasks.next()) {
             (None, None) => Ok(Some(cluster)),
-            _ => Err(tonic::Status::invalid_argument(
+            _ => try_rpc!(bail tonic::Status::invalid_argument(
                 "Cannot determine the cluster from the filter, multiple clusters targeted",
             )),
         }
@@ -96,7 +101,10 @@ impl TasksService for Service {
         request: tasks::list::Request,
         _context: RequestContext,
     ) -> std::result::Result<tasks::list::Response, tonic::Status> {
-        let Some(cluster) = self.cluster_from_task_filter(&request.filters).await? else {
+        let Some(cluster) = try_rpc!(try self
+            .cluster_from_task_filter(&request.filters)
+            .await)
+        else {
             return Ok(tasks::list::Response {
                 tasks: Vec::new(),
                 page: request.page,
@@ -105,9 +113,11 @@ impl TasksService for Service {
             });
         };
 
-        let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+        let mut client = try_rpc!(try cluster
+            .client()
+            .await);
         let span = client.span();
-        client
+        try_rpc!(map client
             .tasks()
             .call(request)
             .instrument(span)
@@ -116,6 +126,7 @@ impl TasksService for Service {
                 armonik::client::RequestError::Grpc { source, .. } => *source,
                 err => tonic::Status::internal(err.to_string()),
             })
+        )
     }
 
     async fn list_detailed(
@@ -123,7 +134,10 @@ impl TasksService for Service {
         request: tasks::list_detailed::Request,
         _context: RequestContext,
     ) -> std::result::Result<tasks::list_detailed::Response, tonic::Status> {
-        let Some(cluster) = self.cluster_from_task_filter(&request.filters).await? else {
+        let Some(cluster) = try_rpc!(try self
+            .cluster_from_task_filter(&request.filters)
+            .await)
+        else {
             return Ok(tasks::list_detailed::Response {
                 tasks: Vec::new(),
                 page: request.page,
@@ -132,9 +146,9 @@ impl TasksService for Service {
             });
         };
 
-        let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+        let mut client = try_rpc!(try cluster.client().await);
         let span = client.span();
-        client
+        try_rpc!(map client
             .tasks()
             .call(request)
             .instrument(span)
@@ -143,6 +157,7 @@ impl TasksService for Service {
                 armonik::client::RequestError::Grpc { source, .. } => *source,
                 err => tonic::Status::internal(err.to_string()),
             })
+        )
     }
 
     async fn get(
@@ -186,13 +201,15 @@ impl TasksService for Service {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "Error while cancelling tasks, cancelling could be partial: {err}"
+                        "Error while cancelling tasks, cancelling could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     error.error(err);
                 }
             }
         }
-        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        error.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         Ok(tasks::cancel::Response { tasks })
     }
@@ -232,13 +249,15 @@ impl TasksService for Service {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "Error while getting result ids, listing could be partial: {err}"
+                        "Error while getting result ids, listing could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     error.error(err);
                 }
             }
         }
-        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        error.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         Ok(tasks::get_result_ids::Response { task_results })
     }
@@ -277,12 +296,16 @@ impl TasksService for Service {
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("Error while counting tasks, count could be partial: {err}");
+                    tracing::warn!(
+                        "Error while counting tasks, count could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
+                    );
                     error.error(err);
                 }
             }
         }
-        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        error.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         Ok(armonik::tasks::count_status::Response {
             status: status

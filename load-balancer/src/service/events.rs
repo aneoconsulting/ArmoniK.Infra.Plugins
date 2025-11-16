@@ -6,7 +6,7 @@ use armonik::{
     server::{EventsService, RequestContext},
 };
 
-use crate::utils::IntoStatus;
+use crate::utils::try_rpc;
 
 use super::Service;
 
@@ -28,33 +28,30 @@ impl EventsService for Service {
             returned_events,
         } = request;
 
-        let cluster = self
+        let cluster = try_rpc!(try self
             .get_cluster_from_session(&session_id)
-            .await?
-            .ok_or_else(|| {
-                tonic::Status::not_found(format!("Session {session_id} was not found"))
-            })?;
+            .await);
+        let cluster = try_rpc!(try cluster
+            .ok_or_else(|| tonic::Status::not_found(format!("Session {session_id} was not found"))));
 
         let span = tracing::Span::current();
         let stream = async_stream::stream! {
-            let mut client = cluster
+            let mut client = try_rpc!(map cluster
                 .client()
                 .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?;
+                .await)?;
             let span = client.span();
 
-            let stream = client
+            let stream = try_rpc!(map client
                 .events()
                 .subscribe(session_id, task_filters, result_filters, returned_events)
                 .instrument(span.clone())
-                .await
-                .map_err(IntoStatus::into_status)?;
+                .await)?;
 
             let mut stream = std::pin::pin!(stream);
 
             while let Some(event) = stream.next().await {
-                yield event.map_err(IntoStatus::into_status);
+                yield try_rpc!(map event);
             }
         };
 
