@@ -58,7 +58,9 @@ impl SubmitterService for Service {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "Error while getting result service configuration, configuration could be partial: {err}"
+                        "Error while getting submitter service configuration, configuration could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     size.error(err);
                 }
@@ -158,7 +160,11 @@ impl SubmitterService for Service {
                     task_ids.extend(response.task_ids);
                 }
                 Err(err) => {
-                    tracing::warn!("Error while listing tasks, listing could be partial: {err}");
+                    tracing::warn!(
+                        "Error while listing tasks, listing could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
+                    );
                     error.error(err);
                 }
             }
@@ -200,7 +206,11 @@ impl SubmitterService for Service {
                     session_ids.extend(response.session_ids);
                 }
                 Err(err) => {
-                    tracing::warn!("Error while listing sessions, listing could be partial: {err}");
+                    tracing::warn!(
+                        "Error while listing sessions, listing could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
+                    );
                     error.error(err);
                 }
             }
@@ -246,7 +256,11 @@ impl SubmitterService for Service {
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("Error while counting tasks, count could be partial: {err}");
+                    tracing::warn!(
+                        "Error while counting tasks, count could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
+                    );
                     error.error(err);
                 }
             }
@@ -309,7 +323,9 @@ impl SubmitterService for Service {
                 Ok(completion) => completion,
                 Err(err) => {
                     tracing::warn!(
-                        "Error while waiting for task completion, waiting could be partial: {err}"
+                        "Error while waiting for task completion, waiting could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     error.error(err);
                     continue;
@@ -380,7 +396,9 @@ impl SubmitterService for Service {
                 Ok(_) => success = true,
                 Err(err) => {
                     tracing::warn!(
-                        "Error while cancelling tasks, cancelling could be partial: {err}"
+                        "Error while cancelling tasks, cancelling could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     error.get_or_insert(err);
                 }

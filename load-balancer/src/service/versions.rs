@@ -46,7 +46,9 @@ impl VersionsService for Service {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "Error while getting result service configuration, configuration could be partial: {err}"
+                        "Error while listing service versions, versions could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     versions.error(err);
                 }

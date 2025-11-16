@@ -60,7 +60,9 @@ impl PartitionsService for Service {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "Error while listing partitions, listing could be partial: {err}"
+                        "Error while listing partitions, listing could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     error.error(err);
                 }

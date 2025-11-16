@@ -201,7 +201,9 @@ impl TasksService for Service {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "Error while cancelling tasks, cancelling could be partial: {err}"
+                        "Error while cancelling tasks, cancelling could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     error.error(err);
                 }
@@ -247,7 +249,9 @@ impl TasksService for Service {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "Error while getting result ids, listing could be partial: {err}"
+                        "Error while getting result ids, listing could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     error.error(err);
                 }
@@ -292,7 +296,11 @@ impl TasksService for Service {
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("Error while counting tasks, count could be partial: {err}");
+                    tracing::warn!(
+                        "Error while counting tasks, count could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
+                    );
                     error.error(err);
                 }
             }

@@ -54,7 +54,11 @@ impl HealthChecksService for Service {
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("Error while checking health, listing could be partial: {err}");
+                    tracing::warn!(
+                        "Error while checking health, listing could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
+                    );
                     error.error(err);
                 }
             }

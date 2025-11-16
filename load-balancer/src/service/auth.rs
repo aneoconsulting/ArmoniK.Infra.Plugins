@@ -46,7 +46,11 @@ impl AuthService for Service {
                     RecoverableResult::Error(_) => user.success(candidate),
                 },
                 Err(err) => {
-                    tracing::warn!("Error while getting curring user, user permissions could be partial: {err}");
+                    tracing::warn!(
+                        "Error while getting curring user, user permissions could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
+                    );
                     user.error(err);
                 }
             }

@@ -57,7 +57,9 @@ impl ApplicationsService for Service {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "Error while listing applications, listing could be partial: {err}"
+                        "Error while listing applications, listing could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     error.error(err);
                 }
