@@ -23,6 +23,8 @@ clusters:
     # Whether a connection can process multiple requests simultaneously (default: false)
     # If the upstream cluster requests the connection closure regularly (like nginx), it is recommended to keep it disabled.
     multiplex: true
+    # Set the cluster as a fallback if no cluster could be matched
+    fallback: false
 
   # configuration for the cluster called "local"
   local:

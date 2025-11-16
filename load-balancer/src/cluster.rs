@@ -20,9 +20,12 @@ pub struct ClusterConfig<C = armonik::ClientConfig> {
     /// Number of requests sent on a connection before it is recreated
     #[serde(default)]
     pub requests_per_connection: Option<usize>,
-    /// Whether a connection can process mutliple requests simultaneously
+    /// Whether a connection can process multiple requests simultaneously
     #[serde(default)]
     pub multiplex: bool,
+    /// Set the cluster as a fallback if no cluster could be matched
+    #[serde(default)]
+    pub fallback: bool,
 }
 
 impl<C> ClusterConfig<C> {
@@ -35,6 +38,7 @@ impl<C> ClusterConfig<C> {
             pool_size: self.pool_size,
             requests_per_connection: self.requests_per_connection,
             multiplex: self.multiplex,
+            fallback: self.fallback,
         })
     }
 }
