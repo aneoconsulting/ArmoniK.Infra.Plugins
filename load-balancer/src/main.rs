@@ -8,7 +8,7 @@ use armonik::reexports::tonic;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use tracing as _;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 
 pub mod bag;
 pub mod cluster;
@@ -107,12 +107,34 @@ async fn wait_terminate() {
 
 #[tokio::main]
 async fn main() -> Result<(), eyre::Report> {
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env();
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_span_events(
-            tracing_subscriber::fmt::format::FmtSpan::NEW
-                | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
-        ))
-        .with(tracing_subscriber::EnvFilter::from_default_env())
+        // Print only events matching the env filter,
+        // but record without printing all spans regardless of there level to give context to events
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NONE)
+                .with_filter(tracing_subscriber::filter::dynamic_filter_fn({
+                    let env_filter = env_filter.clone();
+                    move |metadata, context| {
+                        metadata.is_span() || env_filter.enabled(metadata, context.clone())
+                    }
+                })),
+        )
+        // Print spans matching the env filter, but not events to avoid duplication
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_span_events(
+                    tracing_subscriber::fmt::format::FmtSpan::NEW
+                        | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
+                )
+                .with_filter(tracing_subscriber::filter::dynamic_filter_fn({
+                    let env_filter = env_filter.clone();
+                    move |metadata, context| {
+                        metadata.is_span() && env_filter.enabled(metadata, context.clone())
+                    }
+                })),
+        )
         .init();
 
     let cli = Cli::parse();

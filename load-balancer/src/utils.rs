@@ -53,7 +53,7 @@ macro_rules! try_rpc {
     };
     (warn $err:expr) => {{
         let err = crate::utils::IntoStatus::into_status($err);
-        tracing::warn!("{err}");
+        tracing::warn!("{:?}: {}", err.code(), err.message());
         err
     }};
 }
