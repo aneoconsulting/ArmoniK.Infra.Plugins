@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{IntoStatus, RecoverableResult};
+use crate::utils::{try_rpc, IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -40,7 +40,7 @@ impl AuthService for Service {
                     RecoverableResult::Unknown => user.success(candidate),
                     RecoverableResult::Recovered(user) => {
                         if *user != candidate {
-                            return Err(tonic::Status::internal("Mismatch between clusters"));
+                            try_rpc!(bail tonic::Status::internal("Mismatch between clusters"));
                         }
                     }
                     RecoverableResult::Error(_) => user.success(candidate),
@@ -51,7 +51,7 @@ impl AuthService for Service {
                 }
             }
         }
-        let user = user.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        let user = user.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         Ok(auth::current_user::Response { user })
     }

@@ -11,7 +11,7 @@ use armonik::{
 use rusqlite::params_from_iter;
 use serde::{Deserialize, Serialize};
 
-use crate::utils::{impl_unary, IntoStatus};
+use crate::utils::{impl_unary, try_rpc, IntoStatus};
 
 use super::Service;
 
@@ -23,10 +23,10 @@ impl SessionsService for Service {
         _context: RequestContext,
     ) -> std::result::Result<sessions::list::Response, tonic::Status> {
         let Ok(page) = usize::try_from(request.page) else {
-            return Err(tonic::Status::invalid_argument("Page should be positive"));
+            try_rpc!(bail tonic::Status::invalid_argument("Page should be positive"));
         };
         let Ok(page_size) = usize::try_from(request.page_size) else {
-            return Err(tonic::Status::invalid_argument(
+            try_rpc!(bail tonic::Status::invalid_argument(
                 "Page size should be positive",
             ));
         };
@@ -47,7 +47,7 @@ impl SessionsService for Service {
                 loop {
                     query_suffix.push_str(sep);
                     sep = " AND ";
-                    let column = field_to_column_name(cond.field.clone(), true)?;
+                    let column = try_rpc!(try field_to_column_name(cond.field.clone(), true));
                     if let sessions::Field::TaskOptionGeneric(key) = &cond.field {
                         params.push(Box::new(key.clone()));
                     }
@@ -60,7 +60,7 @@ impl SessionsService for Service {
                         (ValueType::Duration, sessions::filter::Condition::Duration(_)) => (),
                         (ValueType::Array, sessions::filter::Condition::Array(_)) => (),
                         _ => {
-                            return Err(Status::invalid_argument(format!(
+                            try_rpc!(bail Status::invalid_argument(format!(
                                 "Condition {:?} is not valid for the field {}",
                                 &cond.condition, column.grpc
                             )));
@@ -197,7 +197,7 @@ impl SessionsService for Service {
                 ..
             } => (),
             _ => {
-                let column = field_to_column_name(request.sort.field, false)?;
+                let column = try_rpc!(try field_to_column_name(request.sort.field, false));
                 let direction = if matches!(request.sort.direction, armonik::SortDirection::Desc) {
                     "DESC"
                 } else {
@@ -230,7 +230,7 @@ impl SessionsService for Service {
         let query_count = format!("SELECT COUNT(*) FROM session{query_suffix}");
         std::mem::drop(build_span);
 
-        let (sessions, total) = self
+        let (sessions, total) = try_rpc!(try self
             .db
             .call(tracing::trace_span!("transaction"), move |conn| {
                 let mut sessions = Vec::<armonik::sessions::Raw>::new();
@@ -269,8 +269,7 @@ impl SessionsService for Service {
                 transaction.commit()?;
                 Result::<_, rusqlite::Error>::Ok((sessions, total))
             })
-            .await
-            .map_err(IntoStatus::into_status)?;
+            .await);
 
         Ok(armonik::sessions::list::Response {
             sessions,
@@ -350,8 +349,8 @@ impl SessionsService for Service {
         }
 
         match err {
-            Some(err) => Err(err),
-            None => Err(tonic::Status::internal("No cluster")),
+            Some(err) => try_rpc!(bail err),
+            None => try_rpc!(bail tonic::Status::internal("No cluster")),
         }
     }
 
@@ -397,14 +396,13 @@ impl SessionsService for Service {
         let response = impl_unary!(service.sessions, request, session)?;
 
         // If delete is successful, remove the session from the list
-        self.db
+        try_rpc!(try self.db
             .execute(
                 "DELETE FROM session WHERE session_id = ?",
                 [session_id],
                 tracing::trace_span!("delete"),
             )
-            .await
-            .map_err(IntoStatus::into_status)?;
+            .await);
 
         Ok(response)
     }

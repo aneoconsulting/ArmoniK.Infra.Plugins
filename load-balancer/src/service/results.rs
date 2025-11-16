@@ -9,7 +9,7 @@ use futures::stream::FuturesUnordered;
 
 use crate::{
     cluster::Cluster,
-    utils::{IntoStatus, RecoverableResult},
+    utils::{try_rpc, IntoStatus, RecoverableResult},
 };
 
 use super::Service;
@@ -54,7 +54,7 @@ impl Service {
             }
 
             if !has_check {
-                return Err(armonik::reexports::tonic::Status::invalid_argument(String::from("Cannot determine the cluster from the filter, missing condition on session_id")));
+                try_rpc!(bail armonik::reexports::tonic::Status::invalid_argument(String::from("Cannot determine the cluster from the filter, missing condition on session_id")));
             }
         }
 
@@ -73,7 +73,7 @@ impl Service {
             (Some(ses_cluster), None) => ses_cluster.0,
             (Some(ses_cluster), Some(res_cluster)) => {
                 if res_cluster != ses_cluster {
-                    return Err(tonic::Status::invalid_argument(
+                    try_rpc!(bail tonic::Status::invalid_argument(
                         "Cannot determine the cluster from the filter, multiple clusters targeted",
                     ));
                 }
@@ -82,7 +82,7 @@ impl Service {
         };
         match (sessions.next(), results.next()) {
             (None, None) => Ok(Some(cluster)),
-            _ => Err(tonic::Status::invalid_argument(
+            _ => try_rpc!(bail tonic::Status::invalid_argument(
                 "Cannot determine the cluster from the filter, multiple clusters targeted",
             )),
         }
@@ -95,7 +95,10 @@ impl ResultsService for Service {
         request: results::list::Request,
         _context: RequestContext,
     ) -> std::result::Result<results::list::Response, tonic::Status> {
-        let Some(cluster) = self.cluster_from_result_filter(&request.filters).await? else {
+        let Some(cluster) = try_rpc!(try self
+            .cluster_from_result_filter(&request.filters)
+            .await)
+        else {
             return Ok(results::list::Response {
                 results: Vec::new(),
                 page: request.page,
@@ -104,9 +107,11 @@ impl ResultsService for Service {
             });
         };
 
-        let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+        let mut client = try_rpc!(try cluster
+            .client()
+            .await);
         let span = client.span();
-        client
+        try_rpc!(map client
             .results()
             .call(request)
             .instrument(span)
@@ -115,6 +120,7 @@ impl ResultsService for Service {
                 armonik::client::RequestError::Grpc { source, .. } => *source,
                 err => tonic::Status::internal(err.to_string()),
             })
+        )
     }
 
     async fn get(
@@ -213,7 +219,7 @@ impl ResultsService for Service {
                 }
             }
         }
-        let size = size.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        let size = size.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         // As all clients should get the same result, it is safe to store it unconditionally
         self.result_preferred_size
@@ -234,7 +240,10 @@ impl ResultsService for Service {
             > + Send,
         tonic::Status,
     > {
-        let Some(cluster) = self.get_cluster_from_session(&request.session_id).await? else {
+        let Some(cluster) = try_rpc!(try self
+            .get_cluster_from_session(&request.session_id)
+            .await)
+        else {
             return Err(tonic::Status::not_found(format!(
                 "Session {} was not found",
                 request.session_id
@@ -243,18 +252,20 @@ impl ResultsService for Service {
 
         let span = tracing::Span::current();
         Ok(async_stream::try_stream! {
-            let mut client = cluster.client().instrument(span).await.map_err(IntoStatus::into_status)?;
+            let mut client = try_rpc!(map cluster
+                .client()
+                .instrument(span)
+                .await)?;
             let span = client.span();
 
-            let mut stream = client
+            let mut stream = try_rpc!(map client
                 .results()
                 .download(request.session_id, request.result_id)
                 .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?;
+                .await)?;
 
             while let Some(chunk) = stream.next().await {
-                let chunk = chunk.map_err(IntoStatus::into_status)?;
+                let chunk = try_rpc!(map chunk)?;
                 yield results::download::Response{ data_chunk: chunk };
             }
         })
@@ -275,8 +286,9 @@ impl ResultsService for Service {
                 session_id,
                 result_id,
             })) => {
-                let Some(cluster) = self.get_cluster_from_session(&session_id).await? else {
-                    return Err(tonic::Status::not_found(format!(
+                let Some(cluster) = try_rpc!(try self.get_cluster_from_session(&session_id).await)
+                else {
+                    try_rpc!(bail tonic::Status::not_found(format!(
                         "Session {session_id} was not found",
                     )));
                 };
@@ -294,7 +306,9 @@ impl ResultsService for Service {
                     }
                 });
 
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = try_rpc!(try cluster
+                    .client()
+                    .await);
                 let span = client.span();
                 let mut result_client = client.results();
 
@@ -302,27 +316,27 @@ impl ResultsService for Service {
                     result = result_client.upload(session_id, result_id, stream).instrument(span) => {
                         match result {
                             Ok(result) => Ok(results::upload::Response { result }),
-                            Err(err) => Err(err.into_status())
+                            Err(err) => try_rpc!(bail err),
                         }
                     }
                     Ok(invalid) = rx => {
                         match invalid {
                             Ok(results::upload::Request::DataChunk(_)) => unreachable!(),
                             Ok(results::upload::Request::Identifier { .. }) => {
-                                Err(tonic::Status::invalid_argument("Invalid upload request, identifier sent multiple times"))
+                                try_rpc!(bail tonic::Status::invalid_argument("Invalid upload request, identifier sent multiple times"))
                             }
-                            Err(err) => Err(err),
+                            Err(err) => try_rpc!(bail err),
                         }
                     }
                 }
             }
             Some(Ok(results::upload::Request::DataChunk(_))) => {
-                Err(tonic::Status::invalid_argument(
+                try_rpc!(bail tonic::Status::invalid_argument(
                     "Could not upload result, data sent before identifier",
                 ))
             }
-            Some(Err(err)) => Err(err),
-            None => Err(tonic::Status::invalid_argument(
+            Some(Err(err)) => try_rpc!(bail err),
+            None => try_rpc!(bail tonic::Status::invalid_argument(
                 "Could not upload result, no identifier nor data sent",
             )),
         }

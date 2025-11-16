@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{IntoStatus, RecoverableResult};
+use crate::utils::{try_rpc, IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -52,7 +52,8 @@ impl VersionsService for Service {
                 }
             }
         }
-        let versions = versions.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        let versions =
+            versions.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         Ok(versions)
     }

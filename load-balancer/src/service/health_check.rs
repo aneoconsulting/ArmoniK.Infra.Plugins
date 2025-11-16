@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{IntoStatus, RecoverableResult};
+use crate::utils::{try_rpc, IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -59,7 +59,7 @@ impl HealthChecksService for Service {
                 }
             }
         }
-        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        error.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         Ok(health_checks::check::Response {
             services: services

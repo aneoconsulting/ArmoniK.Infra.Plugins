@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{merge_streams, IntoStatus, RecoverableResult};
+use crate::utils::{merge_streams, try_rpc, IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -18,10 +18,10 @@ impl PartitionsService for Service {
         _context: RequestContext,
     ) -> std::result::Result<partitions::list::Response, tonic::Status> {
         let Ok(page) = usize::try_from(request.page) else {
-            return Err(tonic::Status::invalid_argument("Page should be positive"));
+            try_rpc!(bail tonic::Status::invalid_argument("Page should be positive"));
         };
         let Ok(page_size) = usize::try_from(request.page_size) else {
-            return Err(tonic::Status::invalid_argument(
+            try_rpc!(bail tonic::Status::invalid_argument(
                 "Page size should be positive",
             ));
         };
@@ -66,7 +66,7 @@ impl PartitionsService for Service {
                 }
             }
         }
-        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        error.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         match &request.sort.field {
             partitions::Field::Unspecified => (),
@@ -133,8 +133,8 @@ impl PartitionsService for Service {
         }
 
         match err {
-            Some(err) => Err(err),
-            None => Err(tonic::Status::internal("No cluster")),
+            Some(err) => try_rpc!(bail err),
+            None => try_rpc!(bail tonic::Status::internal("No cluster")),
         }
     }
 }
