@@ -1,7 +1,5 @@
 use armonik::reexports::tonic::Status;
 
-use futures::{stream::futures_unordered, Stream, StreamExt};
-
 macro_rules! impl_unary {
     ($self:ident.$service:ident, $request:ident, session) => {
         crate::utils::impl_unary!($self.$service, $request, {get_cluster_from_session, session_id, "Session {} was not found"})
@@ -100,35 +98,6 @@ impl IntoStatus for rusqlite::Error {
 impl IntoStatus for Status {
     fn into_status(self) -> Status {
         self
-    }
-}
-
-async fn stream_next<S: Stream + Unpin>(mut stream: S) -> (S, Option<<S as Stream>::Item>)
-where
-    <S as Stream>::Item: 'static,
-{
-    let res = stream.next().await;
-    (stream, res)
-}
-
-pub fn merge_streams<'a, S>(
-    streams: impl IntoIterator<Item = S>,
-) -> impl Stream<Item = <S as Stream>::Item> + 'a
-where
-    S: Stream + Unpin + 'a,
-    <S as Stream>::Item: 'static,
-{
-    let mut futures = futures_unordered::FuturesUnordered::new();
-    for stream in streams {
-        futures.push(stream_next(stream));
-    }
-    async_stream::stream! {
-        while let Some((stream, res)) = futures.next().await {
-            if let Some(item) = res {
-                futures.push(stream_next(stream));
-                yield item;
-            }
-        }
     }
 }
 

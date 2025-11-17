@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{merge_streams, try_rpc, IntoStatus, RecoverableResult};
+use crate::utils::{try_rpc, IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -49,7 +49,7 @@ impl PartitionsService for Service {
                 yield Ok(vec![]);
             })
         });
-        let mut streams = std::pin::pin!(merge_streams(streams));
+        let mut streams = std::pin::pin!(futures::stream::select_all(streams));
 
         let mut error = RecoverableResult::new();
         while let Some(chunk) = streams.next().await {

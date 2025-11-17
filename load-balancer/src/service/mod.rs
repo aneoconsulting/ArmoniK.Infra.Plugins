@@ -16,10 +16,7 @@ use sessions::Session;
 use armonik::reexports::{tokio_stream::StreamExt, tonic::Status, tracing_futures::Instrument};
 use thread_local::ThreadLocal;
 
-use crate::{
-    cluster::Cluster,
-    utils::{merge_streams, IntoStatus},
-};
+use crate::{cluster::Cluster, utils::IntoStatus};
 
 mod applications;
 mod auth;
@@ -763,7 +760,7 @@ impl Service {
             })
         });
 
-        let mut streams = std::pin::pin!(merge_streams(streams));
+        let mut streams = std::pin::pin!(futures::stream::select_all(streams));
 
         while let Some((cluster, response)) = streams.next().await {
             match response {
