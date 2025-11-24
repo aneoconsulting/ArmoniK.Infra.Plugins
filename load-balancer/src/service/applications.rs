@@ -14,7 +14,7 @@ impl ApplicationsService for Service {
     async fn list(
         self: Arc<Self>,
         request: applications::list::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<applications::list::Response, tonic::Status> {
         let Ok(page) = usize::try_from(request.page) else {
             try_rpc!(bail tonic::Status::invalid_argument("Page should be positive"));
@@ -27,9 +27,11 @@ impl ApplicationsService for Service {
 
         let streams = self.clusters.values().map(|cluster| {
             let request = request.clone();
+            let context =
+                RequestContext::new(context.headers().clone(), context.extensions().clone());
             Box::pin(async_stream::stream! {
                 let mut client = cluster
-                    .client()
+                    .client(&context)
                     .await
                     .map_err(IntoStatus::into_status)?;
                 let span = client.span();

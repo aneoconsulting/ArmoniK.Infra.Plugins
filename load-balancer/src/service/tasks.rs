@@ -99,7 +99,7 @@ impl TasksService for Service {
     async fn list(
         self: Arc<Self>,
         request: tasks::list::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<tasks::list::Response, tonic::Status> {
         let Some(cluster) = try_rpc!(try self
             .cluster_from_task_filter(&request.filters)
@@ -114,7 +114,7 @@ impl TasksService for Service {
         };
 
         let mut client = try_rpc!(try cluster
-            .client()
+            .client(&context)
             .await);
         let span = client.span();
         try_rpc!(map client
@@ -132,7 +132,7 @@ impl TasksService for Service {
     async fn list_detailed(
         self: Arc<Self>,
         request: tasks::list_detailed::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<tasks::list_detailed::Response, tonic::Status> {
         let Some(cluster) = try_rpc!(try self
             .cluster_from_task_filter(&request.filters)
@@ -146,7 +146,7 @@ impl TasksService for Service {
             });
         };
 
-        let mut client = try_rpc!(try cluster.client().await);
+        let mut client = try_rpc!(try cluster.client(&context).await);
         let span = client.span();
         try_rpc!(map client
             .tasks()
@@ -163,21 +163,24 @@ impl TasksService for Service {
     async fn get(
         self: Arc<Self>,
         request: tasks::get::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<tasks::get::Response, tonic::Status> {
-        crate::utils::impl_unary!(self.tasks, request, task)
+        crate::utils::impl_unary!(self.tasks, request, context, task)
     }
 
     async fn cancel(
         self: Arc<Self>,
         request: tasks::cancel::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<tasks::cancel::Response, tonic::Status> {
         let mut futures = self
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 Result::<_, tonic::Status>::Ok(
                     client
@@ -217,13 +220,16 @@ impl TasksService for Service {
     async fn get_result_ids(
         self: Arc<Self>,
         request: tasks::get_result_ids::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<tasks::get_result_ids::Response, tonic::Status> {
         let mut futures = self
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 Result::<_, tonic::Status>::Ok(
                     client
@@ -265,13 +271,16 @@ impl TasksService for Service {
     async fn count_status(
         self: Arc<Self>,
         request: tasks::count_status::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<tasks::count_status::Response, tonic::Status> {
         let mut futures = self
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 Result::<_, tonic::Status>::Ok(
                     client
@@ -318,8 +327,8 @@ impl TasksService for Service {
     async fn submit(
         self: Arc<Self>,
         request: tasks::submit::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<tasks::submit::Response, tonic::Status> {
-        crate::utils::impl_unary!(self.tasks, request, session)
+        crate::utils::impl_unary!(self.tasks, request, context, session)
     }
 }

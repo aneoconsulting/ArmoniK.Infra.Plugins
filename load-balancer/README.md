@@ -67,6 +67,17 @@ docker run --rm \
   dockerhubaneo/armonik_load_balancer
 ```
 
+## Authentication
+
+The Load Balancer does not perform any form of authorization/authentication.
+It expects the authentication to be handled by the nginx that is in front of it.
+You can find an example of nginx configuration in the [ArmoniK.Infra](https://github.com/aneoconsulting/ArmoniK.Infra/blob/main/armonik/ingress-configmap.tf) repository.
+
+The Load Balancer can propagates user identity to the upstream cluster by forwarding authentication headers from nginx.
+You must then configure the nginx *behind* the Load Balancer to keep these headers if the client certificate is the one used by the Load Balancer.
+You can change the list of forward headers using the `forward_headers` cluster configuration.
+By default it forwards the following headers: `X-Certificate-Client-CN`, `X-Certificate-Client-Fingerprint`
+
 # Logs
 
 By default, the load balancer logs only errors and warnings to stdout.

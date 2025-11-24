@@ -3,17 +3,17 @@ use armonik::reexports::tonic::Status;
 use futures::{stream::futures_unordered, Stream, StreamExt};
 
 macro_rules! impl_unary {
-    ($self:ident.$service:ident, $request:ident, session) => {
-        crate::utils::impl_unary!($self.$service, $request, {get_cluster_from_session, session_id, "Session {} was not found"})
+    ($self:ident.$service:ident, $request:ident, $context:ident, session) => {
+        crate::utils::impl_unary!($self.$service, $request, $context, {get_cluster_from_session, session_id, "Session {} was not found"})
     };
-    ($self:ident.$service:ident, $request:ident, result) => {
-        crate::utils::impl_unary!($self.$service, $request, {get_cluster_from_result, result_id, "Result {} was not found"})
+    ($self:ident.$service:ident, $request:ident, $context:ident, result) => {
+        crate::utils::impl_unary!($self.$service, $request, $context, {get_cluster_from_result, result_id, "Result {} was not found"})
     };
-    ($self:ident.$service:ident, $request:ident, task) => {
-        crate::utils::impl_unary!($self.$service, $request, {get_cluster_from_task, task_id, "Task {} was not found"})
+    ($self:ident.$service:ident, $request:ident, $context:ident, task) => {
+        crate::utils::impl_unary!($self.$service, $request, $context, {get_cluster_from_task, task_id, "Task {} was not found"})
     };
 
-    ($self:ident.$service:ident, $request:ident, {$get_cluster:ident, $id:ident, $msg:literal}) => {
+    ($self:ident.$service:ident, $request:ident, $context:ident, {$get_cluster:ident, $id:ident, $msg:literal}) => {
         {
             let Some(cluster) = crate::utils::try_rpc!(try $self.$get_cluster(&$request.$id).await) else {
                 crate::utils::try_rpc!(bail tonic::Status::not_found(format!(
@@ -23,7 +23,7 @@ macro_rules! impl_unary {
             };
 
             let mut client = crate::utils::try_rpc!(try cluster
-                .client()
+                .client(&$context)
                 .await);
             let span = client.span();
             crate::utils::try_rpc!(map client.$service()

@@ -14,7 +14,7 @@ impl EventsService for Service {
     async fn subscribe(
         self: Arc<Self>,
         request: events::subscribe::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> Result<
         impl tonic::codegen::tokio_stream::Stream<
                 Item = Result<events::subscribe::Response, tonic::Status>,
@@ -37,7 +37,7 @@ impl EventsService for Service {
         let span = tracing::Span::current();
         let stream = async_stream::stream! {
             let mut client = try_rpc!(map cluster
-                .client()
+                .client(&context)
                 .instrument(span)
                 .await)?;
             let span = client.span();

@@ -15,7 +15,7 @@ impl HealthChecksService for Service {
     async fn check(
         self: Arc<Self>,
         _request: health_checks::check::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<health_checks::check::Response, tonic::Status> {
         let mut services = HashMap::<String, (health_checks::Status, String)>::new();
 
@@ -23,7 +23,10 @@ impl HealthChecksService for Service {
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 client
                     .health_checks()

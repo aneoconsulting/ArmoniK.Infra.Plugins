@@ -1,10 +1,17 @@
 use std::{
+    collections::HashSet,
     hash::Hash,
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
 };
 
-use armonik::reexports::{tokio_stream, tonic};
+use armonik::{
+    reexports::{
+        http::{HeaderName, HeaderValue},
+        hyper, tokio_stream, tonic,
+    },
+    server::RequestContext,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
@@ -26,6 +33,9 @@ pub struct ClusterConfig<C = armonik::ClientConfig> {
     /// Set the cluster as a fallback if no cluster could be matched
     #[serde(default)]
     pub fallback: bool,
+    /// Headers to forward to the cluster if present
+    #[serde(default)]
+    pub forward_headers: Option<Vec<String>>,
 }
 
 impl<C> ClusterConfig<C> {
@@ -39,6 +49,7 @@ impl<C> ClusterConfig<C> {
             requests_per_connection: self.requests_per_connection,
             multiplex: self.multiplex,
             fallback: self.fallback,
+            forward_headers: self.forward_headers,
         })
     }
 }
@@ -50,6 +61,7 @@ pub struct Cluster {
     pub requests_per_connection: Option<NonZeroUsize>,
     pub semaphore: Option<Semaphore>,
     pub multiplex: bool,
+    pub forward_headers: HashSet<String>,
 }
 
 impl std::fmt::Debug for Cluster {
@@ -99,10 +111,21 @@ impl Cluster {
             )
             .map(|size| Semaphore::new(size.get())),
             multiplex: config.multiplex,
+            forward_headers: config
+                .forward_headers
+                .unwrap_or(vec![
+                    String::from("X-Certificate-Client-CN"),
+                    String::from("X-Certificate-Client-Fingerprint"),
+                ])
+                .into_iter()
+                .collect(),
         }
     }
 
-    pub async fn client(&self) -> Result<ClusterClient<'_>, armonik::client::ConnectionError> {
+    pub async fn client(
+        &self,
+        context: &RequestContext,
+    ) -> Result<ClusterClient<'_>, armonik::client::ConnectionError> {
         let permit = match &self.semaphore {
             Some(semaphore) => Some(semaphore.acquire().await.unwrap()),
             None => None,
@@ -115,7 +138,23 @@ impl Cluster {
             }
         };
 
+        let internal = armonik::Client::with_channel(ClusterClientInternal {
+            client: client.clone(),
+            headers: context
+                .headers()
+                .iter()
+                .filter_map(|(key, value)| {
+                    if self.forward_headers.contains(key.as_str()) {
+                        Some((key.clone(), value.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        });
+
         let mut client = ClusterClient {
+            internal,
             client,
             requests,
             bag: &self.client,
@@ -131,7 +170,36 @@ impl Cluster {
     }
 }
 
+#[derive(Clone)]
+pub struct ClusterClientInternal {
+    client: armonik::Client,
+    headers: Vec<(HeaderName, HeaderValue)>,
+}
+
+impl tonic::client::GrpcService<tonic::body::Body> for ClusterClientInternal {
+    type ResponseBody =
+        <armonik::Client as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody;
+    type Error = <armonik::Client as tonic::client::GrpcService<tonic::body::Body>>::Error;
+    type Future = <armonik::Client as tonic::client::GrpcService<tonic::body::Body>>::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.client.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut request: hyper::http::Request<tonic::body::Body>) -> Self::Future {
+        for (key, value) in &self.headers {
+            request.headers_mut().insert(key.clone(), value.clone());
+        }
+
+        self.client.call(request)
+    }
+}
+
 pub struct ClusterClient<'a> {
+    internal: armonik::Client<ClusterClientInternal>,
     client: armonik::Client,
     requests: Option<NonZeroUsize>,
     bag: &'a Bag<(armonik::Client, Option<NonZeroUsize>)>,
@@ -140,21 +208,21 @@ pub struct ClusterClient<'a> {
 }
 
 impl Deref for ClusterClient<'_> {
-    type Target = armonik::Client;
+    type Target = armonik::Client<ClusterClientInternal>;
 
     fn deref(&self) -> &Self::Target {
-        &self.client
+        &self.internal
     }
 }
 impl DerefMut for ClusterClient<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.client
+        &mut self.internal
     }
 }
 
-impl AsRef<armonik::Client> for ClusterClient<'_> {
-    fn as_ref(&self) -> &armonik::Client {
-        &self.client
+impl AsRef<armonik::Client<ClusterClientInternal>> for ClusterClient<'_> {
+    fn as_ref(&self) -> &armonik::Client<ClusterClientInternal> {
+        &self.internal
     }
 }
 
