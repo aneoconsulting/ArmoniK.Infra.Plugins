@@ -93,7 +93,7 @@ impl ResultsService for Service {
     async fn list(
         self: Arc<Self>,
         request: results::list::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<results::list::Response, tonic::Status> {
         let Some(cluster) = try_rpc!(try self
             .cluster_from_result_filter(&request.filters)
@@ -108,7 +108,7 @@ impl ResultsService for Service {
         };
 
         let mut client = try_rpc!(try cluster
-            .client()
+            .client(&context)
             .await);
         let span = client.span();
         try_rpc!(map client
@@ -126,55 +126,55 @@ impl ResultsService for Service {
     async fn get(
         self: Arc<Self>,
         request: results::get::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<results::get::Response, tonic::Status> {
-        crate::utils::impl_unary!(self.results, request, {get_cluster_from_result, id, "Result {} was not found"})
+        crate::utils::impl_unary!(self.results, request, context, {get_cluster_from_result, id, "Result {} was not found"})
     }
 
     async fn get_owner_task_id(
         self: Arc<Self>,
         request: results::get_owner_task_id::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<results::get_owner_task_id::Response, tonic::Status> {
-        crate::utils::impl_unary!(self.results, request, session)
+        crate::utils::impl_unary!(self.results, request, context, session)
     }
 
     async fn create_metadata(
         self: Arc<Self>,
         request: results::create_metadata::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<results::create_metadata::Response, tonic::Status> {
-        crate::utils::impl_unary!(self.results, request, session)
+        crate::utils::impl_unary!(self.results, request, context, session)
     }
 
     async fn create(
         self: Arc<Self>,
         request: results::create::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<results::create::Response, tonic::Status> {
-        crate::utils::impl_unary!(self.results, request, session)
+        crate::utils::impl_unary!(self.results, request, context, session)
     }
 
     async fn delete_data(
         self: Arc<Self>,
         request: results::delete_data::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<results::delete_data::Response, tonic::Status> {
-        crate::utils::impl_unary!(self.results, request, session)
+        crate::utils::impl_unary!(self.results, request, context, session)
     }
 
     async fn import(
         self: Arc<Self>,
         request: results::import::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<results::import::Response, tonic::Status> {
-        crate::utils::impl_unary!(self.results, request, session)
+        crate::utils::impl_unary!(self.results, request, context, session)
     }
 
     async fn get_service_configuration(
         self: Arc<Self>,
         _request: results::get_service_configuration::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<results::get_service_configuration::Response, tonic::Status> {
         // Try to get the cached value
         let size = self
@@ -190,7 +190,10 @@ impl ResultsService for Service {
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 client
                     .results()
@@ -235,7 +238,7 @@ impl ResultsService for Service {
     async fn download(
         self: Arc<Self>,
         request: results::download::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> Result<
         impl tonic::codegen::tokio_stream::Stream<
                 Item = Result<results::download::Response, tonic::Status>,
@@ -255,7 +258,7 @@ impl ResultsService for Service {
         let span = tracing::Span::current();
         Ok(async_stream::try_stream! {
             let mut client = try_rpc!(map cluster
-                .client()
+                .client(&context)
                 .instrument(span)
                 .await)?;
             let span = client.span();
@@ -279,7 +282,7 @@ impl ResultsService for Service {
                 Item = Result<results::upload::Request, tonic::Status>,
             > + Send
             + 'static,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> Result<results::upload::Response, tonic::Status> {
         let mut request = Box::pin(request);
 
@@ -309,7 +312,7 @@ impl ResultsService for Service {
                 });
 
                 let mut client = try_rpc!(try cluster
-                    .client()
+                    .client(&context)
                     .await);
                 let span = client.span();
                 let mut result_client = client.results();

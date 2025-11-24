@@ -282,23 +282,23 @@ impl SessionsService for Service {
     async fn get(
         self: Arc<Self>,
         request: sessions::get::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<sessions::get::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, session)
+        impl_unary!(self.sessions, request, context, session)
     }
 
     async fn cancel(
         self: Arc<Self>,
         request: sessions::cancel::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<sessions::cancel::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, session)
+        impl_unary!(self.sessions, request, context, session)
     }
 
     async fn create(
         self: Arc<Self>,
         request: sessions::create::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<sessions::create::Response, tonic::Status> {
         let n = self.clusters.len();
         let i = self
@@ -308,7 +308,7 @@ impl SessionsService for Service {
         let mut err = None;
 
         for cluster in self.clusters.values().cycle().skip(i % n).take(n) {
-            match cluster.client().await {
+            match cluster.client(&context).await {
                 Ok(mut client) => {
                     let span = client.span();
                     let response = client
@@ -357,43 +357,43 @@ impl SessionsService for Service {
     async fn pause(
         self: Arc<Self>,
         request: sessions::pause::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<sessions::pause::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, session)
+        impl_unary!(self.sessions, request, context, session)
     }
 
     async fn resume(
         self: Arc<Self>,
         request: sessions::resume::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<sessions::resume::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, session)
+        impl_unary!(self.sessions, request, context, session)
     }
 
     async fn close(
         self: Arc<Self>,
         request: sessions::close::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<sessions::close::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, session)
+        impl_unary!(self.sessions, request, context, session)
     }
 
     async fn purge(
         self: Arc<Self>,
         request: sessions::purge::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<sessions::purge::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, session)
+        impl_unary!(self.sessions, request, context, session)
     }
 
     async fn delete(
         self: Arc<Self>,
         request: sessions::delete::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<sessions::delete::Response, tonic::Status> {
         let service = self.clone();
         let session_id = request.session_id.clone();
-        let response = impl_unary!(service.sessions, request, session)?;
+        let response = impl_unary!(service.sessions, request, context, session)?;
 
         // If delete is successful, remove the session from the list
         try_rpc!(try self.db
@@ -410,9 +410,9 @@ impl SessionsService for Service {
     async fn stop_submission(
         self: Arc<Self>,
         request: sessions::stop_submission::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<sessions::stop_submission::Response, tonic::Status> {
-        impl_unary!(self.sessions, request, session)
+        impl_unary!(self.sessions, request, context, session)
     }
 }
 

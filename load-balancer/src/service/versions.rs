@@ -15,13 +15,16 @@ impl VersionsService for Service {
     async fn list(
         self: Arc<Self>,
         _request: versions::list::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<versions::list::Response, tonic::Status> {
         let mut cluster_versions = self
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 client
                     .versions()

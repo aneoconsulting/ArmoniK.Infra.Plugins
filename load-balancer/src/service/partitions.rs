@@ -15,7 +15,7 @@ impl PartitionsService for Service {
     async fn list(
         self: Arc<Self>,
         request: partitions::list::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<partitions::list::Response, tonic::Status> {
         let Ok(page) = usize::try_from(request.page) else {
             try_rpc!(bail tonic::Status::invalid_argument("Page should be positive"));
@@ -30,9 +30,11 @@ impl PartitionsService for Service {
 
         let streams = self.clusters.values().map(|cluster| {
             let request = request.clone();
+            let context =
+                RequestContext::new(context.headers().clone(), context.extensions().clone());
             Box::pin(async_stream::stream! {
                 let mut client = cluster
-                    .client()
+                    .client(&context)
                     .await
                     .map_err(IntoStatus::into_status)?;
                 let span = client.span();
@@ -107,7 +109,7 @@ impl PartitionsService for Service {
     async fn get(
         self: Arc<Self>,
         request: partitions::get::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<partitions::get::Response, tonic::Status> {
         let mut err = None;
 
@@ -115,7 +117,10 @@ impl PartitionsService for Service {
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
 
                 client

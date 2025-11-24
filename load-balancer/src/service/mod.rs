@@ -366,7 +366,7 @@ impl Service {
                 .clusters
                 .values()
                 .map(|cluster| async {
-                    let mut client = match cluster.client().await {
+                    let mut client = match cluster.client(&Default::default()).await {
                         Ok(client) => client,
                         Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
                     };
@@ -506,7 +506,7 @@ impl Service {
                 .clusters
                 .values()
                 .map(|cluster| async {
-                    let mut client = match cluster.client().await {
+                    let mut client = match cluster.client(&Default::default()).await {
                         Ok(client) => client,
                         Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
                     };
@@ -640,7 +640,7 @@ impl Service {
                 .clusters
                 .values()
                 .map(|cluster| async {
-                    let mut client = match cluster.client().await {
+                    let mut client = match cluster.client(&Default::default()).await {
                         Ok(client) => client,
                         Err(err) => return (cluster.clone(), Err(IntoStatus::into_status(err))),
                     };
@@ -730,7 +730,7 @@ impl Service {
     pub async fn update_sessions(&self) -> Result<(), Status> {
         let streams = self.clusters.values().map(|cluster| {
             Box::pin(async_stream::stream! {
-                let mut client = match cluster.client().await.map_err(IntoStatus::into_status) {
+                let mut client = match cluster.client(&Default::default()).await.map_err(IntoStatus::into_status) {
                     Ok(client) => client,
                     Err(err) => {
                         yield (cluster.clone(), Err(err));

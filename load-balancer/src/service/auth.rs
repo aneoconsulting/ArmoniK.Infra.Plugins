@@ -15,13 +15,16 @@ impl AuthService for Service {
     async fn current_user(
         self: Arc<Self>,
         _request: auth::current_user::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<auth::current_user::Response, tonic::Status> {
         let mut users = self
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 client
                     .auth()

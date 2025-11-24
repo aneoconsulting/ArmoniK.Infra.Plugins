@@ -17,7 +17,7 @@ impl SubmitterService for Service {
     async fn get_service_configuration(
         self: Arc<Self>,
         _request: submitter::get_service_configuration::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<submitter::get_service_configuration::Response, tonic::Status> {
         tracing::warn!("SubmitterService::GetServiceConfiguration is deprecated, please use ResultsService::GetServiceConfiguration instead");
 
@@ -35,7 +35,10 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 client
                     .submitter()
@@ -80,7 +83,7 @@ impl SubmitterService for Service {
     async fn create_session(
         self: Arc<Self>,
         request: submitter::create_session::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<submitter::create_session::Response, tonic::Status> {
         tracing::warn!("SubmitterService::CreateSession is deprecated, please use SessionsService::CreateSession instead");
 
@@ -92,7 +95,7 @@ impl SubmitterService for Service {
         let mut err = None;
 
         for (_, cluster) in self.clusters.iter().cycle().skip(i % n).take(n) {
-            match cluster.client().await {
+            match cluster.client(&context).await {
                 Ok(mut client) => {
                     let span = client.span();
                     let response = client
@@ -119,17 +122,17 @@ impl SubmitterService for Service {
     async fn cancel_session(
         self: Arc<Self>,
         request: submitter::cancel_session::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<submitter::cancel_session::Response, tonic::Status> {
         tracing::warn!("SubmitterService::CancelSession is deprecated, please use SessionsService::CancelSession instead");
 
-        impl_unary!(self.submitter, request, session)
+        impl_unary!(self.submitter, request, context, session)
     }
 
     async fn list_tasks(
         self: Arc<Self>,
         request: submitter::list_tasks::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<submitter::list_tasks::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::ListTasks is deprecated, please use TasksService::ListTasks instead"
@@ -141,7 +144,10 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 client
                     .submitter()
@@ -177,7 +183,7 @@ impl SubmitterService for Service {
     async fn list_sessions(
         self: Arc<Self>,
         request: submitter::list_sessions::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<submitter::list_sessions::Response, tonic::Status> {
         tracing::warn!("SubmitterService::ListSessions is deprecated, please use SessionsService::ListSessions instead");
 
@@ -187,7 +193,10 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 client
                     .submitter()
@@ -223,7 +232,7 @@ impl SubmitterService for Service {
     async fn count_tasks(
         self: Arc<Self>,
         request: submitter::count_tasks::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<submitter::count_tasks::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::CountTasks is deprecated, please use TasksService::CountTasksByStatus instead"
@@ -235,7 +244,10 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 client
                     .submitter()
@@ -275,21 +287,21 @@ impl SubmitterService for Service {
     async fn try_get_task_output(
         self: Arc<Self>,
         request: submitter::try_get_task_output::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<submitter::try_get_task_output::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::TryGetTaskOutput is deprecated, please use TasksService::GetTask instead"
         );
-        crate::utils::impl_unary!(self.submitter, request, session)
+        crate::utils::impl_unary!(self.submitter, request, context, session)
     }
 
     async fn wait_for_availability(
         self: Arc<Self>,
         request: submitter::wait_for_availability::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<submitter::wait_for_availability::Response, tonic::Status> {
         tracing::warn!("SubmitterService::WaitForAvailability is deprecated, please use EventsService::GetEvents instead");
-        crate::utils::impl_unary!(self.submitter, request, session)
+        crate::utils::impl_unary!(self.submitter, request, context, session)
     }
 
     async fn wait_for_completion(
@@ -304,7 +316,10 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 client
                     .submitter()
@@ -368,7 +383,7 @@ impl SubmitterService for Service {
     async fn cancel_tasks(
         self: Arc<Self>,
         request: submitter::cancel_tasks::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<submitter::cancel_tasks::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::CancelTasks is deprecated, please use TasksService::CancelTasks instead"
@@ -378,7 +393,10 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = cluster
+                    .client(&context)
+                    .await
+                    .map_err(IntoStatus::into_status)?;
                 let span = client.span();
                 client
                     .submitter()
@@ -416,7 +434,7 @@ impl SubmitterService for Service {
     async fn task_status(
         self: Arc<Self>,
         request: submitter::task_status::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<submitter::task_status::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::TaskStatus is deprecated, please use TasksService::ListTasks instead"
@@ -425,7 +443,7 @@ impl SubmitterService for Service {
         let mut error = None;
 
         for cluster in self.clusters.values() {
-            let mut client = match cluster.client().await {
+            let mut client = match cluster.client(&context).await {
                 Ok(client) => client,
                 Err(err) => {
                     tracing::warn!("Error while counting tasks, count could be partial: {err}");
@@ -459,16 +477,16 @@ impl SubmitterService for Service {
     async fn result_status(
         self: Arc<Self>,
         request: submitter::result_status::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> std::result::Result<submitter::result_status::Response, tonic::Status> {
         tracing::warn!("SubmitterService::ResultStatus is deprecated, please use ResultsService::ListResults instead");
-        crate::utils::impl_unary!(self.submitter, request, session)
+        crate::utils::impl_unary!(self.submitter, request, context, session)
     }
 
     async fn try_get_result(
         self: Arc<Self>,
         request: submitter::try_get_result::Request,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> Result<
         impl tonic::codegen::tokio_stream::Stream<
                 Item = Result<submitter::try_get_result::Response, tonic::Status>,
@@ -491,7 +509,7 @@ impl SubmitterService for Service {
         let span = tracing::Span::current();
         Ok(async_stream::try_stream! {
             let mut client = try_rpc!(map cluster
-                .client()
+                .client(&context)
                 .instrument(span)
                 .await)?;
             let span = client.span();
@@ -510,12 +528,12 @@ impl SubmitterService for Service {
     async fn create_small_tasks(
         self: Arc<Self>,
         request: submitter::create_tasks::SmallRequest,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> Result<submitter::create_tasks::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::CreateSmallTasks is deprecated, please use a combination of ResultsService::CreateResults and TasksService::SubmitTasks instead"
         );
-        crate::utils::impl_unary!(self.submitter, request, session)
+        crate::utils::impl_unary!(self.submitter, request, context, session)
     }
 
     async fn create_large_tasks(
@@ -524,7 +542,7 @@ impl SubmitterService for Service {
                 Item = Result<submitter::create_tasks::LargeRequest, tonic::Status>,
             > + Send
             + 'static,
-        _context: RequestContext,
+        context: RequestContext,
     ) -> Result<submitter::create_tasks::Response, tonic::Status> {
         tracing::warn!(
             "SubmitterService::CreateLargeTasks is deprecated, please use a combination of ResultsService::CreateResults and TasksService::SubmitTasks instead"
@@ -570,7 +588,7 @@ impl SubmitterService for Service {
                 };
 
                 let mut client = try_rpc!(try cluster
-                    .client()
+                    .client(&context)
                     .await);
                 let span = client.span();
                 let mut submitter_client = client.submitter();

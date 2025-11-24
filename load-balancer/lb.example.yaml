@@ -25,6 +25,9 @@ clusters:
     multiplex: true
     # Set the cluster as a fallback if no cluster could be matched
     fallback: false
+    # Headers to forward to the cluster if present
+    # (default: ["X-Certificate-Client-CN", "X-Certificate-Client-Fingerprint"]
+    forward_headers: ["X-Certificate-Client-CN"]
 
   # configuration for the cluster called "local"
   local:
