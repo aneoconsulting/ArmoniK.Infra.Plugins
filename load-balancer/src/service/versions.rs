@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{IntoStatus, RecoverableResult};
+use crate::utils::{try_rpc, IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -46,13 +46,16 @@ impl VersionsService for Service {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "Error while getting result service configuration, configuration could be partial: {err}"
+                        "Error while listing service versions, versions could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     versions.error(err);
                 }
             }
         }
-        let versions = versions.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        let versions =
+            versions.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         Ok(versions)
     }

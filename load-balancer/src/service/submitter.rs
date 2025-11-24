@@ -9,7 +9,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{impl_unary, IntoStatus, RecoverableResult};
+use crate::utils::{impl_unary, try_rpc, IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -58,13 +58,15 @@ impl SubmitterService for Service {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "Error while getting result service configuration, configuration could be partial: {err}"
+                        "Error while getting submitter service configuration, configuration could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     size.error(err);
                 }
             }
         }
-        let size = size.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        let size = size.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         // As all clients should get the same result, it is safe to store it unconditionally
         self.submitter_preferred_size
@@ -109,8 +111,8 @@ impl SubmitterService for Service {
         }
 
         match err {
-            Some(err) => Err(err),
-            None => Err(tonic::Status::internal("No cluster")),
+            Some(err) => try_rpc!(bail err),
+            None => try_rpc!(bail tonic::Status::internal("No cluster")),
         }
     }
 
@@ -158,12 +160,16 @@ impl SubmitterService for Service {
                     task_ids.extend(response.task_ids);
                 }
                 Err(err) => {
-                    tracing::warn!("Error while listing tasks, listing could be partial: {err}");
+                    tracing::warn!(
+                        "Error while listing tasks, listing could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
+                    );
                     error.error(err);
                 }
             }
         }
-        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        error.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         Ok(submitter::list_tasks::Response { task_ids })
     }
@@ -200,12 +206,16 @@ impl SubmitterService for Service {
                     session_ids.extend(response.session_ids);
                 }
                 Err(err) => {
-                    tracing::warn!("Error while listing sessions, listing could be partial: {err}");
+                    tracing::warn!(
+                        "Error while listing sessions, listing could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
+                    );
                     error.error(err);
                 }
             }
         }
-        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        error.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         Ok(submitter::list_sessions::Response { session_ids })
     }
@@ -246,12 +256,16 @@ impl SubmitterService for Service {
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("Error while counting tasks, count could be partial: {err}");
+                    tracing::warn!(
+                        "Error while counting tasks, count could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
+                    );
                     error.error(err);
                 }
             }
         }
-        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        error.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         Ok(armonik::submitter::count_tasks::Response {
             values: status_count,
@@ -309,7 +323,9 @@ impl SubmitterService for Service {
                 Ok(completion) => completion,
                 Err(err) => {
                     tracing::warn!(
-                        "Error while waiting for task completion, waiting could be partial: {err}"
+                        "Error while waiting for task completion, waiting could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     error.error(err);
                     continue;
@@ -332,17 +348,17 @@ impl SubmitterService for Service {
             {
                 std::mem::drop(wait_all);
 
-                return self
+                return try_rpc!(map self
                     .count_tasks(
                         armonik::submitter::count_tasks::Request {
                             filter: request.filter,
                         },
                         context,
                     )
-                    .await;
+                    .await);
             }
         }
-        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        error.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         Ok(armonik::submitter::wait_for_completion::Response {
             values: status_count,
@@ -380,7 +396,9 @@ impl SubmitterService for Service {
                 Ok(_) => success = true,
                 Err(err) => {
                     tracing::warn!(
-                        "Error while cancelling tasks, cancelling could be partial: {err}"
+                        "Error while cancelling tasks, cancelling could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     error.get_or_insert(err);
                 }
@@ -388,7 +406,7 @@ impl SubmitterService for Service {
         }
         if let Some(error) = error {
             if !success {
-                return Err(error);
+                try_rpc!(bail error);
             }
         }
 
@@ -416,13 +434,12 @@ impl SubmitterService for Service {
                 }
             };
             let span = client.span();
-            let response = client
+            let response = try_rpc!(try client
                 .submitter()
                 .call(request.clone())
                 .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?
-                .statuses;
+                .await)
+            .statuses;
 
             for (task_id, status) in response {
                 task_status.insert(task_id, status);
@@ -430,7 +447,7 @@ impl SubmitterService for Service {
         }
         if let Some(error) = error {
             if task_status.is_empty() {
-                return Err(error);
+                try_rpc!(bail error);
             }
         }
 
@@ -461,8 +478,11 @@ impl SubmitterService for Service {
         tracing::warn!(
             "SubmitterService::TryGetResult is deprecated, please use ResultsService::DownloadResultData instead"
         );
-        let Some(cluster) = self.get_cluster_from_session(&request.session_id).await? else {
-            return Err(tonic::Status::not_found(format!(
+        let Some(cluster) = try_rpc!(try self
+            .get_cluster_from_session(&request.session_id)
+            .await)
+        else {
+            try_rpc!(bail tonic::Status::not_found(format!(
                 "Session {} was not found",
                 request.session_id
             )));
@@ -470,21 +490,18 @@ impl SubmitterService for Service {
 
         let span = tracing::Span::current();
         Ok(async_stream::try_stream! {
-            let mut client = cluster
+            let mut client = try_rpc!(map cluster
                 .client()
                 .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?;
+                .await)?;
             let span = client.span();
-            let mut stream = client
+            let mut stream = try_rpc!(map client
                 .submitter()
                 .try_get_result(request.session_id, request.result_id)
                 .instrument(span)
-                .await
-                .map_err(IntoStatus::into_status)?;
+                .await)?;
             while let Some(item) = stream.next().await {
-                let item = item.map_err(IntoStatus::into_status)?;
-                yield item;
+                yield try_rpc!(map item)?;
             }
         }
         .in_current_span())
@@ -521,8 +538,9 @@ impl SubmitterService for Service {
                     task_options,
                 },
             ))) => {
-                let Some(cluster) = self.get_cluster_from_session(&session_id).await? else {
-                    return Err(tonic::Status::not_found(format!(
+                let Some(cluster) = try_rpc!(try self.get_cluster_from_session(&session_id).await)
+                else {
+                    try_rpc!(bail tonic::Status::not_found(format!(
                         "Session {session_id} was not found",
                     )));
                 };
@@ -551,25 +569,27 @@ impl SubmitterService for Service {
                     }
                 };
 
-                let mut client = cluster.client().await.map_err(IntoStatus::into_status)?;
+                let mut client = try_rpc!(try cluster
+                    .client()
+                    .await);
                 let span = client.span();
                 let mut submitter_client = client.submitter();
 
                 tokio::select! {
                     result = submitter_client.create_large_tasks(stream).instrument(span) => match result {
                         Ok(result) => Ok(armonik::submitter::create_tasks::Response::Status(result)),
-                        Err(err) => Err(err.into_status()),
+                        Err(err) => try_rpc!(bail err),
                     },
                     Ok(invalid) = rx => {
-                        Err(invalid)
+                        try_rpc!(bail invalid)
                     }
                 }
             }
-            Some(Ok(_)) => Err(tonic::Status::invalid_argument(
+            Some(Ok(_)) => try_rpc!(bail tonic::Status::invalid_argument(
                 "Could not create tasks, data sent before identifier",
             )),
-            Some(Err(err)) => Err(err),
-            None => Err(tonic::Status::invalid_argument(
+            Some(Err(err)) => try_rpc!(bail err),
+            None => try_rpc!(bail tonic::Status::invalid_argument(
                 "Could not create tasks, no identifier nor data sent",
             )),
         }

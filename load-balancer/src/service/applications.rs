@@ -6,7 +6,7 @@ use armonik::{
     server::{ApplicationsService, RequestContext},
 };
 
-use crate::utils::{merge_streams, IntoStatus, RecoverableResult};
+use crate::utils::{merge_streams, try_rpc, IntoStatus, RecoverableResult};
 
 use super::Service;
 
@@ -17,12 +17,10 @@ impl ApplicationsService for Service {
         _context: RequestContext,
     ) -> std::result::Result<applications::list::Response, tonic::Status> {
         let Ok(page) = usize::try_from(request.page) else {
-            return Err(tonic::Status::invalid_argument("Page should be positive"));
+            try_rpc!(bail tonic::Status::invalid_argument("Page should be positive"));
         };
         let Ok(page_size) = usize::try_from(request.page_size) else {
-            return Err(tonic::Status::invalid_argument(
-                "Page size should be positive",
-            ));
+            try_rpc!(bail tonic::Status::invalid_argument("Page size should be positive"));
         };
 
         let mut applications = Vec::new();
@@ -59,13 +57,15 @@ impl ApplicationsService for Service {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "Error while listing applications, listing could be partial: {err}"
+                        "Error while listing applications, listing could be partial: {:?}: {}",
+                        err.code(),
+                        err.message(),
                     );
                     error.error(err);
                 }
             }
         }
-        error.to_result(|| Err(tonic::Status::internal("No cluster")))?;
+        error.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
         if !request.sort.fields.is_empty() {
             applications.sort_by(|a, b| {
