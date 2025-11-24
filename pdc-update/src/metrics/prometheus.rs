@@ -11,10 +11,7 @@ pub struct PrometheusScraper {
 
 impl PrometheusScraper {
     /// Create a new [`PrometheusScraper`]
-    pub fn new(
-        url: &str,
-        metrics_name: &str,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn new(url: &str, metrics_name: &str) -> Result<Self, eyre::Report> {
         let mut query = reqwest::Url::parse(url)?.join("api/v1/query")?;
         query.query_pairs_mut().append_pair("query", metrics_name);
         Ok(Self { query })
@@ -23,9 +20,7 @@ impl PrometheusScraper {
 
 #[async_trait::async_trait]
 impl MetricsScraper for PrometheusScraper {
-    async fn scrap_metrics(
-        &self,
-    ) -> Result<Vec<MetricsValue>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn scrap_metrics(&self) -> Result<Vec<MetricsValue>, eyre::Report> {
         log::debug!("Scrap Prometheus metrics: {}", self.query);
 
         // Fetch the metrics from Prometheus

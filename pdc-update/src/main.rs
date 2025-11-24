@@ -114,7 +114,7 @@ async fn wait_terminate() {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn main() -> Result<(), eyre::Report> {
     env_logger::init();
     let cli = Cli::parse();
 
@@ -142,7 +142,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
 
         // Scrap metrics
-        let metrics = metrics_scraper.scrap_metrics().await?;
+        let metrics = match metrics_scraper.scrap_metrics().await {
+            Ok(metrics) => metrics,
+            Err(err) => {
+                log::error!("{err:?}");
+                continue;
+            }
+        };
 
         // Convert metrics to updates
         let updates = metrics
@@ -176,7 +182,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let n = updates.len();
 
         // Apply updates
-        worker_updater.update_many(updates).await?;
+        if let Err(err) = worker_updater.update_many(updates).await {
+            log::error!("{err:?}");
+            continue;
+        }
 
         match n {
             0 => {}

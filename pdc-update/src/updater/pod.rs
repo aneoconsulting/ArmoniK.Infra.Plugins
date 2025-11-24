@@ -17,7 +17,7 @@ impl PodUpdater {
     /// Create a new [`PodUpdater`]
     ///
     /// The configuration for Kubernetes is fetched from configuration files and/or environment variables
-    pub async fn new(concurrency: usize) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn new(concurrency: usize) -> Result<Self, eyre::Report> {
         Ok(Self {
             client: kube::Client::try_default().await?,
             concurrency,
@@ -27,10 +27,7 @@ impl PodUpdater {
 
 #[async_trait::async_trait]
 impl WorkerUpdater for PodUpdater {
-    async fn update(
-        &self,
-        update: WorkerUpdate,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn update(&self, update: WorkerUpdate) -> Result<(), eyre::Report> {
         let WorkerUpdate {
             name,
             namespace,
