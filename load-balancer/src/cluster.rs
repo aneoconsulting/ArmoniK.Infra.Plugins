@@ -118,6 +118,7 @@ impl Cluster {
                     String::from("X-Certificate-Client-Fingerprint"),
                 ])
                 .into_iter()
+                .map(|header| header.to_lowercase())
                 .collect(),
         }
     }
@@ -144,7 +145,7 @@ impl Cluster {
                 .headers()
                 .iter()
                 .filter_map(|(key, value)| {
-                    if self.forward_headers.contains(key.as_str()) {
+                    if self.forward_headers.contains(&key.as_str().to_lowercase()) {
                         Some((key.clone(), value.clone()))
                     } else {
                         None
