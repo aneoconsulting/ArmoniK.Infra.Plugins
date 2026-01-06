@@ -1,4 +1,4 @@
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 
 pub mod pod;
 
@@ -17,10 +17,7 @@ pub struct WorkerUpdate {
 #[async_trait::async_trait]
 pub trait WorkerUpdater {
     /// Update a single worker
-    async fn update(
-        &self,
-        update: WorkerUpdate,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn update(&self, update: WorkerUpdate) -> Result<(), eyre::Report>;
 
     /// Get the maximum concurrency for the updater
     fn concurrency(&self) -> usize {
@@ -30,17 +27,18 @@ pub trait WorkerUpdater {
     /// Update many workers
     ///
     /// remarks: It respects the imposed concurrency of the updater
-    async fn update_many(
-        &self,
-        updates: Vec<WorkerUpdate>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn update_many(&self, updates: Vec<WorkerUpdate>) -> Result<(), eyre::Report> {
         let concurrency = self.concurrency();
 
         let mut stream = futures::stream::iter(updates)
             .map(|update| self.update(update))
             .buffer_unordered(concurrency);
 
-        while stream.try_next().await?.is_some() {}
+        while let Some(response) = stream.next().await {
+            if let Err(err) = response {
+                log::error!("{err:?}");
+            }
+        }
         Ok(())
     }
 }

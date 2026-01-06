@@ -17,7 +17,5 @@ pub struct MetricsValue {
 #[async_trait::async_trait]
 pub trait MetricsScraper {
     /// Scrap metrics for the multiple workers
-    async fn scrap_metrics(
-        &self,
-    ) -> Result<Vec<MetricsValue>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn scrap_metrics(&self) -> Result<Vec<MetricsValue>, eyre::Report>;
 }
