@@ -177,8 +177,10 @@ async fn main() -> Result<(), eyre::Report> {
     let refresh_delay = std::time::Duration::from_secs_f64(conf.refresh_delay.parse()?);
 
     let router = tonic::transport::Server::builder()
+        .accept_http1(true)
         .trace_fn(|r| tracing::info_span!("gRPC", "path" = r.uri().path()))
         .http2_max_pending_accept_reset_streams(Some(65536))
+        .layer(tonic_web::GrpcWebLayer::new())
         .add_service(
             armonik::api::v3::applications::applications_server::ApplicationsServer::from_arc(
                 service.clone(),

@@ -25,6 +25,7 @@ quick_cache = "0.6"
 rayon = "1.11"
 thread_local = "1.1"
 crossbeam-deque = "0.8"
+tonic-web = "0.14"
 
 [profile.release]
 lto = true
