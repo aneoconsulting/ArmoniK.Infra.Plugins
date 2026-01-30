@@ -78,14 +78,12 @@ impl PartitionsService for Service {
             partitions::Field::ParentPartitionIds => {
                 partitions.sort_by(|a, b| a.parent_partition_ids.cmp(&b.parent_partition_ids))
             }
-            partitions::Field::PodReserved => {
-                partitions.sort_by(|a, b| a.pod_reserved.cmp(&b.pod_reserved))
-            }
-            partitions::Field::PodMax => partitions.sort_by(|a, b| a.pod_max.cmp(&b.pod_max)),
+            partitions::Field::PodReserved => partitions.sort_by_key(|x| x.pod_reserved),
+            partitions::Field::PodMax => partitions.sort_by_key(|x| x.pod_max),
             partitions::Field::PreemptionPercentage => {
-                partitions.sort_by(|a, b| a.preemption_percentage.cmp(&b.preemption_percentage))
+                partitions.sort_by_key(|x| x.preemption_percentage)
             }
-            partitions::Field::Priority => partitions.sort_by(|a, b| a.priority.cmp(&b.priority)),
+            partitions::Field::Priority => partitions.sort_by_key(|x| x.priority),
         }
 
         if matches!(&request.sort.direction, armonik::SortDirection::Desc) {
