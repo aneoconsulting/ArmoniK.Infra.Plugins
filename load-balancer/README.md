@@ -53,7 +53,7 @@ You can also pass the configuration using environment variables using (PascalCas
 ```sh
 export LoadBalancer__Clusters__Remote1__Endpoint="https://remote1.example.com:5001/"
 export LoadBalancer__Clusters__Remote2__Endpoint="https://remote2.example.com:5001/"
-export LoadBalancer__RefreshDelay="60"
+export LoadBalancer__Refresh_Delay="60"
 ./load-balancer
 ```
 
@@ -63,7 +63,7 @@ This also works with docker:
 docker run --rm \
   -e LoadBalancer__Clusters__Remote1__Endpoint="https://remote1.example.com:5001/" \
   -e LoadBalancer__Clusters__Remote2__Endpoint="https://remote2.example.com:5001/" \
-  -e LoadBalancer__RefreshDelay="60" \
+  -e LoadBalancer__Refresh_Delay="60" \
   dockerhubaneo/armonik_load_balancer
 ```
 
