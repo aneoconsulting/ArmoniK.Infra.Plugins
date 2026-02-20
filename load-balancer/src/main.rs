@@ -19,6 +19,14 @@ pub mod utils;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    #[default]
+    Pretty,
+    Json,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LbConfig {
     pub clusters: HashMap<String, cluster::ClusterConfig<armonik::client::ClientConfigArgs>>,
@@ -28,6 +36,8 @@ pub struct LbConfig {
     pub listen_port: u16,
     #[serde(default)]
     pub refresh_delay: String,
+    #[serde(default)]
+    pub log_format: LogFormat,
     #[serde(flatten)]
     pub service_options: service::ServiceOptions,
 }
@@ -105,38 +115,45 @@ async fn wait_terminate() {
     win_signal!(ctrl_c, ctrl_close, ctrl_logoff, ctrl_shutdown);
 }
 
+macro_rules! tracing_init {
+    ($layer:expr) => {
+        {
+            let env_filter = tracing_subscriber::EnvFilter::from_default_env();
+
+            tracing_subscriber::registry()
+                // Print only events matching the env filter,
+                // but record without printing all spans regardless of there level to give context to events
+                .with(
+                    $layer
+                        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NONE)
+                        .with_filter(tracing_subscriber::filter::dynamic_filter_fn({
+                            let env_filter = env_filter.clone();
+                            move |metadata, context| {
+                                metadata.is_span() || env_filter.enabled(metadata, context.clone())
+                            }
+                        })),
+                )
+                // Print spans matching the env filter, but not events to avoid duplication
+                .with(
+                    $layer
+                        .with_span_events(
+                            tracing_subscriber::fmt::format::FmtSpan::NEW
+                                | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
+                        )
+                        .with_filter(tracing_subscriber::filter::dynamic_filter_fn({
+                            let env_filter = env_filter.clone();
+                            move |metadata, context| {
+                                metadata.is_span() && env_filter.enabled(metadata, context.clone())
+                            }
+                        })),
+                )
+                .init();
+        }
+    };
+}
+
 #[tokio::main]
 async fn main() -> Result<(), eyre::Report> {
-    let env_filter = tracing_subscriber::EnvFilter::from_default_env();
-    tracing_subscriber::registry()
-        // Print only events matching the env filter,
-        // but record without printing all spans regardless of there level to give context to events
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NONE)
-                .with_filter(tracing_subscriber::filter::dynamic_filter_fn({
-                    let env_filter = env_filter.clone();
-                    move |metadata, context| {
-                        metadata.is_span() || env_filter.enabled(metadata, context.clone())
-                    }
-                })),
-        )
-        // Print spans matching the env filter, but not events to avoid duplication
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_span_events(
-                    tracing_subscriber::fmt::format::FmtSpan::NEW
-                        | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
-                )
-                .with_filter(tracing_subscriber::filter::dynamic_filter_fn({
-                    let env_filter = env_filter.clone();
-                    move |metadata, context| {
-                        metadata.is_span() && env_filter.enabled(metadata, context.clone())
-                    }
-                })),
-        )
-        .init();
-
     let cli = Cli::parse();
 
     let mut conf = config::Config::builder()
@@ -154,6 +171,18 @@ async fn main() -> Result<(), eyre::Report> {
     }
 
     let conf: LbConfig = conf.build()?.try_deserialize()?;
+    match conf.log_format {
+        LogFormat::Pretty => tracing_init!(tracing_subscriber::fmt::layer()),
+        LogFormat::Json => tracing_init!(tracing_subscriber::fmt::layer()
+            .json()
+            .with_current_span(true)
+            .with_span_list(true)
+            .with_target(true)
+            .with_thread_ids(true)
+            .with_thread_names(true)
+            .with_file(false)
+            .with_line_number(false)),
+    }
 
     tracing::trace!("{conf:?}");
 

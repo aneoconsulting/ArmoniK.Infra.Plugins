@@ -58,3 +58,7 @@ result_cache_size: 2000
 # Number of tasks to keep in the session-cluster mapping cache (default: 1000000)
 # As a rule of thumb, a task entry in the cache should takes about a hundred bytes in memory.
 task_cache_size: 3000
+# Log output format (default: pretty)
+#   "pretty" - Human-readable, color-coded output for local development
+#   "json"   - One JSON object per line, suitable for Elasticsearch / Filebeat / Fluentd / Loki
+log_format: json
