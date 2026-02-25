@@ -72,7 +72,7 @@ impl Service {
             (None, Some(res_cluster)) => res_cluster.0,
             (Some(ses_cluster), None) => ses_cluster.0,
             (Some(ses_cluster), Some(res_cluster)) => {
-                if res_cluster != ses_cluster {
+                if res_cluster.0 != ses_cluster.0 {
                     try_rpc!(bail tonic::Status::invalid_argument(
                         "Cannot determine the cluster from the filter, multiple clusters targeted",
                     ));
