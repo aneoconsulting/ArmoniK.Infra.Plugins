@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashMap, HashSet},
     hash::Hash,
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
@@ -36,6 +36,9 @@ pub struct ClusterConfig<C = armonik::ClientConfig> {
     /// Headers to forward to the cluster if present
     #[serde(default)]
     pub forward_headers: Option<Vec<String>>,
+    /// Extra headers to add to the request
+    #[serde(default)]
+    pub extra_headers: Option<BTreeMap<String, String>>,
 }
 
 impl<C> ClusterConfig<C> {
@@ -50,6 +53,7 @@ impl<C> ClusterConfig<C> {
             multiplex: self.multiplex,
             fallback: self.fallback,
             forward_headers: self.forward_headers,
+            extra_headers: self.extra_headers,
         })
     }
 }
@@ -62,6 +66,7 @@ pub struct Cluster {
     pub semaphore: Option<Semaphore>,
     pub multiplex: bool,
     pub forward_headers: HashSet<String>,
+    pub extra_headers: HashMap<String, String>,
 }
 
 impl std::fmt::Debug for Cluster {
@@ -120,6 +125,11 @@ impl Cluster {
                 .into_iter()
                 .map(|header| header.to_lowercase())
                 .collect(),
+            extra_headers: config
+                .extra_headers
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -139,19 +149,22 @@ impl Cluster {
             }
         };
 
+        let mut headers = HashMap::new();
+        for (key, value) in &self.extra_headers {
+            headers.insert(
+                HeaderName::from_bytes(key.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        for (key, value) in context.headers() {
+            if self.forward_headers.contains(&key.as_str().to_lowercase()) {
+                headers.insert(key.clone(), value.clone());
+            }
+        }
+
         let internal = armonik::Client::with_channel(ClusterClientInternal {
             client: client.clone(),
-            headers: context
-                .headers()
-                .iter()
-                .filter_map(|(key, value)| {
-                    if self.forward_headers.contains(&key.as_str().to_lowercase()) {
-                        Some((key.clone(), value.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
+            headers,
         });
 
         let mut client = ClusterClient {
@@ -174,7 +187,7 @@ impl Cluster {
 #[derive(Clone)]
 pub struct ClusterClientInternal {
     client: armonik::Client,
-    headers: Vec<(HeaderName, HeaderValue)>,
+    headers: HashMap<HeaderName, HeaderValue>,
 }
 
 impl tonic::client::GrpcService<tonic::body::Body> for ClusterClientInternal {

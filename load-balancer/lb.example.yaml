@@ -28,6 +28,11 @@ clusters:
     # Headers to forward to the cluster if present
     # (default: ["X-Certificate-Client-CN", "X-Certificate-Client-Fingerprint"]
     forward_headers: ["X-Certificate-Client-CN"]
+    # Extra headers to add to the request (default: {})
+    # If a header is configured both in forward_headers and extra_headers,
+    # the value from the request will have precedence.
+    extra_headers:
+      X-Certificate-Client-CN: lb.armonik
 
   # configuration for the cluster called "local"
   local:
