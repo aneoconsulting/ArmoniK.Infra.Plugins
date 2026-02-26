@@ -200,7 +200,7 @@ impl TasksService for Service {
             match chunk {
                 Ok(chunk) => {
                     error.success(());
-                    tasks.extend(chunk.into_iter());
+                    tasks.extend(chunk);
                 }
                 Err(err) => {
                     tracing::warn!(
