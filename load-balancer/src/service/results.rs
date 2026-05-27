@@ -190,12 +190,12 @@ impl ResultsService for Service {
             .clusters
             .values()
             .map(|cluster| async {
-                if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                if !cluster.is_available() {
                     tracing::debug!(
                         "Skipping cluster {} because it is marked as unavailable",
                         cluster.name
                     );
-                    return Err(tonic::Status::unavailable("Cluster is unavailable"));
+                    return Err(tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name)));
                 }
                 let mut client = cluster
                     .client(&context)
