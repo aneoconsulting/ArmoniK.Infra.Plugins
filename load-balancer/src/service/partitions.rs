@@ -33,6 +33,11 @@ impl PartitionsService for Service {
             let context =
                 RequestContext::new(context.headers().clone(), context.extensions().clone());
             Box::pin(async_stream::stream! {
+                if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                    tracing::debug!("Skipping cluster {} because it is marked as unavailable", cluster.name);
+                    Err(tonic::Status::unavailable("Cluster is unavailable"))?;
+                }
+
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -115,6 +120,14 @@ impl PartitionsService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable("Cluster is unavailable"));
+                }
+
                 let mut client = cluster
                     .client(&context)
                     .await

@@ -35,6 +35,13 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable("Cluster is unavailable"));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -95,6 +102,9 @@ impl SubmitterService for Service {
         let mut err = None;
 
         for (_, cluster) in self.clusters.iter().cycle().skip(i % n).take(n) {
+            if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                continue;
+            }
             match cluster.client(&context).await {
                 Ok(mut client) => {
                     let span = client.span();
@@ -144,6 +154,13 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable("Cluster is unavailable"));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -193,6 +210,13 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable("Cluster is unavailable"));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -244,6 +268,13 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable("Cluster is unavailable"));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -316,6 +347,13 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable("Cluster is unavailable"));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -393,6 +431,13 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable("Cluster is unavailable"));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -443,6 +488,14 @@ impl SubmitterService for Service {
         let mut error = None;
 
         for cluster in self.clusters.values() {
+            if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "Error while counting tasks, count could be partial: cluster {} is unavailable",
+                    cluster.name
+                );
+                error.get_or_insert(tonic::Status::unavailable("Cluster is unavailable"));
+                continue;
+            }
             let mut client = match cluster.client(&context).await {
                 Ok(client) => client,
                 Err(err) => {

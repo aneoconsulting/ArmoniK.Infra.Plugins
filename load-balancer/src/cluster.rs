@@ -3,6 +3,7 @@ use std::{
     hash::Hash,
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
+    sync::atomic::AtomicBool,
 };
 
 use armonik::{
@@ -67,6 +68,7 @@ pub struct Cluster {
     pub multiplex: bool,
     pub forward_headers: HashSet<String>,
     pub extra_headers: HashMap<String, String>,
+    pub available: AtomicBool,
 }
 
 impl std::fmt::Debug for Cluster {
@@ -130,6 +132,7 @@ impl Cluster {
                 .unwrap_or_default()
                 .into_iter()
                 .collect(),
+            available: AtomicBool::new(true),
         }
     }
 

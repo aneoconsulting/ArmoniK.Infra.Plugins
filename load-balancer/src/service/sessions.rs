@@ -308,6 +308,9 @@ impl SessionsService for Service {
         let mut err = None;
 
         for cluster in self.clusters.values().cycle().skip(i % n).take(n) {
+            if !cluster.available.load(std::sync::atomic::Ordering::Relaxed) {
+                continue;
+            }
             match cluster.client(&context).await {
                 Ok(mut client) => {
                     let span = client.span();
