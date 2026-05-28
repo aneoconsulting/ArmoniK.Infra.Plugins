@@ -33,6 +33,7 @@ tracing-flame = "0.2"
 inferno = { version = "0.12", default-features = false, features = ["multithreaded"] }
 arc-swap = "1.7"
 tokio-stream = { version = "0.1", features = ["net"] }
+core_affinity = "0.8"
 
 [[bench]]
 name = "sessions_unary"

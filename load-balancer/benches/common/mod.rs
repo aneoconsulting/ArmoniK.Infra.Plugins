@@ -53,6 +53,7 @@
 
 pub mod mock;
 pub mod report;
+pub mod runtime;
 pub mod tracing;
 
 use std::{
@@ -69,10 +70,11 @@ use load_balancer::{
     cluster::{Cluster, ClusterConfig},
     service::{Service, ServiceOptions},
 };
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::{net::TcpListener, runtime::Handle, task::JoinHandle};
 use tokio_stream::wrappers::TcpListenerStream;
 
 pub use mock::MockUpstream;
+pub use runtime::Runtimes;
 pub use tracing::init_tracing;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +114,10 @@ pub struct Harness {
     pub mocks: Vec<UpstreamHandle>,
     pub topology: Topology,
     pub service: Option<Arc<Service>>,
+    /// Handle to the mocks-side runtime. `make_clients` spawns each new
+    /// client's h2 driver here so it lands on the configured core set
+    /// regardless of which runtime the caller awaits from.
+    mocks_handle: Handle,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -134,12 +140,23 @@ impl Harness {
     /// concurrent calls through one `tower::buffer::Buffer` mpsc + one h2
     /// driver task, which caps per-Channel throughput. For accurate fan-in
     /// scaling, every concurrent RPC should own its Channel.
+    ///
+    /// Each client is constructed on the mocks runtime so its h2 driver task
+    /// runs on the mocks core set — independent of which runtime the caller
+    /// awaits from.
     pub async fn make_clients(&self, n: usize) -> Vec<armonik::Client> {
         let mut clients = Vec::with_capacity(n);
         for _ in 0..n {
-            let c = armonik::Client::with_config(client_config(&self.client_endpoint))
+            let endpoint = self.client_endpoint.clone();
+            let c = self
+                .mocks_handle
+                .spawn(async move {
+                    armonik::Client::with_config(client_config(&endpoint))
+                        .await
+                        .expect("make_clients: armonik::Client::with_config")
+                })
                 .await
-                .expect("make_clients: armonik::Client::with_config");
+                .expect("make_clients spawn panicked");
             clients.push(c);
         }
         clients
@@ -206,7 +223,7 @@ impl HarnessBuilder {
         self
     }
 
-    pub async fn build(self) -> Harness {
+    pub async fn build(self, runtimes: &Runtimes) -> Harness {
         if matches!(self.topology, Topology::Direct) && self.upstreams != 1 {
             panic!(
                 "Direct topology requires exactly 1 upstream (got {})",
@@ -214,11 +231,14 @@ impl HarnessBuilder {
             );
         }
 
-        // Spawn N mock upstream servers.
+        let mocks_handle = runtimes.mocks_handle();
+        let lb_handle = runtimes.lb_handle();
+
+        // Spawn N mock upstream servers on the mocks runtime.
         let mut mocks = Vec::with_capacity(self.upstreams);
         let mut tasks = Vec::new();
         for i in 0..self.upstreams {
-            let (mock, addr, handle) = spawn_mock_upstream().await;
+            let (mock, addr, handle) = spawn_mock_upstream(&mocks_handle).await;
             tasks.push(handle);
             mocks.push(UpstreamHandle {
                 mock,
@@ -230,80 +250,104 @@ impl HarnessBuilder {
         let (client_endpoint, service) = match self.topology {
             Topology::Direct => (format!("http://{}", mocks[0].addr), None),
             Topology::LoadBalancer => {
-                // Build per-upstream Cluster configs.
+                // Collect cluster construction inputs ahead of time so we can
+                // move them into the LB-runtime future without borrowing `mocks`.
                 let fallback_set: HashSet<&str> =
                     self.fallback_names.iter().map(String::as_str).collect();
-                let mut cluster_map = HashMap::with_capacity(self.upstreams);
-                for handle in &mocks {
-                    let cfg = ClusterConfig::<ClientConfig> {
-                        client: client_config(&format!("http://{}", handle.addr)),
-                        pool_size: self.cluster_pool_size,
-                        requests_per_connection: None,
-                        multiplex: self.cluster_multiplex,
-                        fallback: fallback_set.contains(handle.cluster_name.as_str()),
-                        forward_headers: None,
-                        extra_headers: None,
-                    };
-                    cluster_map.insert(
-                        handle.cluster_name.clone(),
-                        Cluster::new(handle.cluster_name.clone(), cfg),
-                    );
-                }
-                let service = Arc::new(
-                    Service::new(
-                        cluster_map,
-                        self.fallback_names.clone(),
-                        self.service_options,
-                    )
-                    .await,
-                );
+                let cluster_inputs: Vec<(String, ClusterConfig<ClientConfig>)> = mocks
+                    .iter()
+                    .map(|handle| {
+                        let cfg = ClusterConfig::<ClientConfig> {
+                            client: client_config(&format!("http://{}", handle.addr)),
+                            pool_size: self.cluster_pool_size,
+                            requests_per_connection: None,
+                            multiplex: self.cluster_multiplex,
+                            fallback: fallback_set.contains(handle.cluster_name.as_str()),
+                            forward_headers: None,
+                            extra_headers: None,
+                        };
+                        (handle.cluster_name.clone(), cfg)
+                    })
+                    .collect();
 
-                // Seed sessions: write SQLite row + warm cache via one get.
-                for (session_id, idx) in &self.seed_sessions {
-                    let name = format!("c{idx}");
-                    let cluster = service
-                        .cluster_handle(&name)
-                        .unwrap_or_else(|| panic!("seed_session: unknown cluster {name}"));
-                    let raw = sessions::Raw {
-                        session_id: session_id.clone(),
-                        ..Default::default()
-                    };
-                    service
-                        .add_sessions(vec![raw], cluster)
-                        .await
-                        .expect("add_sessions failed");
-                    // Warm cache: one in-process get through the SessionsService trait.
-                    use armonik::server::SessionsService;
-                    let _ = service
-                        .clone()
-                        .get(
-                            sessions::get::Request {
+                let fallback_names = self.fallback_names.clone();
+                let service_options = self.service_options.clone();
+                let seed_sessions = self.seed_sessions.clone();
+
+                // Build clusters + Service + seed/warm on the LB runtime so
+                // any `Handle::current()` reads inside `Cluster::new` see the
+                // LB runtime's worker count.
+                let service = lb_handle
+                    .spawn(async move {
+                        let mut cluster_map = HashMap::with_capacity(cluster_inputs.len());
+                        for (name, cfg) in cluster_inputs {
+                            cluster_map.insert(name.clone(), Cluster::new(name, cfg));
+                        }
+                        let service = Arc::new(
+                            Service::new(cluster_map, fallback_names, service_options).await,
+                        );
+                        for (session_id, idx) in &seed_sessions {
+                            let name = format!("c{idx}");
+                            let cluster = service.cluster_handle(&name).unwrap_or_else(|| {
+                                panic!("seed_session: unknown cluster {name}")
+                            });
+                            let raw = sessions::Raw {
                                 session_id: session_id.clone(),
-                            },
-                            RequestContext::default(),
-                        )
-                        .await;
-                }
+                                ..Default::default()
+                            };
+                            service
+                                .add_sessions(vec![raw], cluster)
+                                .await
+                                .expect("add_sessions failed");
+                            // Warm cache: one in-process get through the SessionsService trait.
+                            use armonik::server::SessionsService;
+                            let _ = service
+                                .clone()
+                                .get(
+                                    sessions::get::Request {
+                                        session_id: session_id.clone(),
+                                    },
+                                    RequestContext::default(),
+                                )
+                                .await;
+                        }
+                        service
+                    })
+                    .await
+                    .expect("LB-setup task panicked");
 
-                // Spawn the LB itself.
-                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-                let addr = listener.local_addr().unwrap();
+                // Spawn the LB tonic server on the LB runtime; bind happens
+                // inside the spawned future so the listener's I/O driver is
+                // the LB runtime. A oneshot returns the bound addr.
                 let svc_for_server = service.clone();
-                let handle = tokio::spawn(async move {
+                let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
+                let task = lb_handle.spawn(async move {
+                    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let _ = addr_tx.send(listener.local_addr().unwrap());
                     let _ = tonic::transport::Server::builder()
                         .add_service(SessionsServer::from_arc(svc_for_server))
                         // future: add other *Server::from_arc(svc) here as RPCs are benched.
                         .serve_with_incoming(TcpListenerStream::new(listener))
                         .await;
                 });
-                tasks.push(handle);
+                tasks.push(task);
+                let addr = addr_rx.await.expect("LB bind/local_addr channel dropped");
                 (format!("http://{addr}"), Some(service))
             }
         };
 
-        let client = armonik::Client::with_config(client_config(&client_endpoint))
+        // The bench-owned client must live on the mocks runtime so its h2
+        // driver lands on the mocks core set even if `build` was awaited
+        // from a different runtime (e.g. a `#[tokio::test]` driver).
+        let endpoint_for_client = client_endpoint.clone();
+        let client = mocks_handle
+            .spawn(async move {
+                armonik::Client::with_config(client_config(&endpoint_for_client))
+                    .await
+                    .expect("armonik::Client::with_config failed for mock_client")
+            })
             .await
-            .expect("armonik::Client::with_config failed for mock_client");
+            .expect("bench-client setup task panicked");
 
         Harness {
             client,
@@ -311,6 +355,7 @@ impl HarnessBuilder {
             mocks,
             topology: self.topology,
             service,
+            mocks_handle,
             tasks,
         }
     }
@@ -327,19 +372,21 @@ fn client_config(endpoint: &str) -> ClientConfig {
     ClientConfig::from_config_args(args).expect("ClientConfig::from_config_args")
 }
 
-async fn spawn_mock_upstream() -> (Arc<MockUpstream>, SocketAddr, JoinHandle<()>) {
+async fn spawn_mock_upstream(handle: &Handle) -> (Arc<MockUpstream>, SocketAddr, JoinHandle<()>) {
     let mock = Arc::new(MockUpstream::default());
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
     let svc = mock.clone();
-    let handle = tokio::spawn(async move {
+    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
+    let task = handle.spawn(async move {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let _ = addr_tx.send(listener.local_addr().unwrap());
         let _ = tonic::transport::Server::builder()
             .add_service(SessionsServer::from_arc(svc))
             // future: add other *Server::from_arc(svc.clone()) here.
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await;
     });
-    (mock, addr, handle)
+    let addr = addr_rx.await.expect("mock bind/local_addr channel dropped");
+    (mock, addr, task)
 }
 
 #[cfg(test)]
@@ -349,10 +396,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn smoke_direct() {
+        let runtimes = Runtimes::for_test();
         let h = Harness::builder()
             .topology(Topology::Direct)
             .upstreams(1)
-            .build()
+            .build(&runtimes)
             .await;
         h.mocks[0].on_sessions_get(|req| sessions::get::Response {
             session: sessions::Raw {
@@ -371,11 +419,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn smoke_lb() {
+        let runtimes = Runtimes::for_test();
         let h = Harness::builder()
             .topology(Topology::LoadBalancer)
             .upstreams(1)
             .seed_session("s-lb", 0)
-            .build()
+            .build(&runtimes)
             .await;
         h.mocks[0].on_sessions_get(|req| sessions::get::Response {
             session: sessions::Raw {

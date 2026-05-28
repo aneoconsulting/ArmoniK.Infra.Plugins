@@ -29,7 +29,7 @@ use armonik::sessions;
 use common::{Harness, Topology};
 use criterion::{criterion_group, BenchmarkId, Criterion, Throughput};
 
-const CONCURRENCIES: &[usize] = &[1, 8, 64, 256, 1024];
+const CONCURRENCIES: &[usize] = &[1, 8, 64, 256, 1024, 4096];
 
 fn install_canned_get(handle: &common::UpstreamHandle) {
     handle.on_sessions_get(|req| sessions::get::Response {
@@ -42,16 +42,13 @@ fn install_canned_get(handle: &common::UpstreamHandle) {
 
 fn bench_sessions_get(c: &mut Criterion) {
     let _trace = common::init_tracing();
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtimes = common::runtime::Runtimes::from_env();
     let session_id = "s-1";
 
     // ---- latency: one in-flight RPC at a time on a single client ----
     let mut lat = c.benchmark_group("sessions_get_latency");
     for topology in [Topology::Direct, Topology::LoadBalancer] {
-        let h = rt.block_on(async {
+        let h = runtimes.mocks().block_on(async {
             let h = Harness::builder()
                 .topology(topology)
                 .upstreams(1)
@@ -61,14 +58,14 @@ fn bench_sessions_get(c: &mut Criterion) {
                 .seed_session(session_id, 0)
                 .cluster_pool_size(1)
                 .cluster_multiplex(false)
-                .build()
+                .build(&runtimes)
                 .await;
             install_canned_get(&h.mocks[0]);
             h
         });
         let client = h.client.clone();
         lat.bench_function(format!("{topology:?}"), |b| {
-            b.to_async(&rt).iter(|| {
+            b.to_async(runtimes.mocks()).iter(|| {
                 let mut client = client.clone();
                 async move { client.sessions().get(session_id).await.unwrap() }
             });
@@ -81,14 +78,14 @@ fn bench_sessions_get(c: &mut Criterion) {
     let mut tp = c.benchmark_group("sessions_get_throughput");
     for topology in [Topology::Direct, Topology::LoadBalancer] {
         for &concurrency in CONCURRENCIES {
-            let (h, clients) = rt.block_on(async {
+            let (h, clients) = runtimes.mocks().block_on(async {
                 let h = Harness::builder()
                     .topology(topology)
                     .upstreams(1)
                     .seed_session(session_id, 0)
                     .cluster_pool_size(concurrency)
                     .cluster_multiplex(false)
-                    .build()
+                    .build(&runtimes)
                     .await;
                 install_canned_get(&h.mocks[0]);
                 let clients = h.make_clients(concurrency).await;
@@ -100,7 +97,7 @@ fn bench_sessions_get(c: &mut Criterion) {
                 &concurrency,
                 |b, &_n| {
                     let clients = clients.clone();
-                    b.to_async(&rt).iter(move || {
+                    b.to_async(runtimes.mocks()).iter(move || {
                         let clients = clients.clone();
                         async move {
                             let futs = clients.into_iter().map(|mut c| async move {
