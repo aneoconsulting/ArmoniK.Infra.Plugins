@@ -62,8 +62,8 @@ use std::{
 };
 
 use armonik::{
-    api::v3::sessions::sessions_server::SessionsServer, client::ClientConfigArgs,
-    reexports::tonic, server::RequestContext, sessions, ClientConfig,
+    api::v3::sessions::sessions_server::SessionsServer, client::ClientConfigArgs, reexports::tonic,
+    server::RequestContext, sessions, ClientConfig,
 };
 use load_balancer::{
     cluster::{Cluster, ClusterConfig},
@@ -101,7 +101,14 @@ impl UpstreamHandle {
 
 /// Fully-wired bench environment. Drop aborts all background server tasks.
 pub struct Harness {
+    /// A pre-built mock_client pointing at the harness's bench endpoint.
+    /// Cloning this client shares the underlying tonic Channel — for benches
+    /// that issue many concurrent RPCs and need independent Channels, call
+    /// [`Harness::make_clients`] instead.
     pub client: armonik::Client,
+    /// Endpoint string used by [`Harness::make_clients`]. Points at the LB in
+    /// `LoadBalancer` topology, at `mocks[0]` in `Direct` topology.
+    pub client_endpoint: String,
     pub mocks: Vec<UpstreamHandle>,
     pub topology: Topology,
     pub service: Option<Arc<Service>>,
@@ -119,6 +126,23 @@ impl Drop for Harness {
 impl Harness {
     pub fn builder() -> HarnessBuilder {
         HarnessBuilder::default()
+    }
+
+    /// Build N independent mock_clients, each with its own tonic `Channel` (and
+    /// hence its own TCP connection / h2 driver task). This is the realistic
+    /// model when comparing throughput: a single `armonik::Client` serializes
+    /// concurrent calls through one `tower::buffer::Buffer` mpsc + one h2
+    /// driver task, which caps per-Channel throughput. For accurate fan-in
+    /// scaling, every concurrent RPC should own its Channel.
+    pub async fn make_clients(&self, n: usize) -> Vec<armonik::Client> {
+        let mut clients = Vec::with_capacity(n);
+        for _ in 0..n {
+            let c = armonik::Client::with_config(client_config(&self.client_endpoint))
+                .await
+                .expect("make_clients: armonik::Client::with_config");
+            clients.push(c);
+        }
+        clients
     }
 }
 
@@ -267,7 +291,6 @@ impl HarnessBuilder {
                 let svc_for_server = service.clone();
                 let handle = tokio::spawn(async move {
                     let _ = tonic::transport::Server::builder()
-                        .accept_http1(true)
                         .add_service(SessionsServer::from_arc(svc_for_server))
                         // future: add other *Server::from_arc(svc) here as RPCs are benched.
                         .serve_with_incoming(TcpListenerStream::new(listener))
@@ -284,6 +307,7 @@ impl HarnessBuilder {
 
         Harness {
             client,
+            client_endpoint,
             mocks,
             topology: self.topology,
             service,
@@ -310,7 +334,6 @@ async fn spawn_mock_upstream() -> (Arc<MockUpstream>, SocketAddr, JoinHandle<()>
     let svc = mock.clone();
     let handle = tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
-            .accept_http1(true)
             .add_service(SessionsServer::from_arc(svc))
             // future: add other *Server::from_arc(svc.clone()) here.
             .serve_with_incoming(TcpListenerStream::new(listener))
