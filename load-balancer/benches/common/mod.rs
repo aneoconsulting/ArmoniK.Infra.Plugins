@@ -62,8 +62,8 @@ use std::{
 };
 
 use armonik::{
-    api::v3::sessions::sessions_server::SessionsServer, client::ClientConfigArgs, reexports::tonic,
-    server::RequestContext, sessions, ClientConfig,
+    api::v3::sessions::sessions_server::SessionsServer, client::ClientConfigArgs,
+    reexports::tonic, server::RequestContext, sessions, ClientConfig,
 };
 use load_balancer::{
     cluster::{Cluster, ClusterConfig},
@@ -296,6 +296,10 @@ fn client_config(endpoint: &str) -> ClientConfig {
     let mut args = ClientConfigArgs::default();
     args.endpoint = endpoint.to_owned();
     args.allow_unsafe_connection = true;
+    // Disable Nagle so unary RPCs don't trip the ~40 ms delayed-ACK timer.
+    // Defaults to false in armonik's ClientConfigArgs; we want it on for both
+    // the mock_client side and the LB-outbound side of the harness.
+    args.tcp_nodelay = true;
     ClientConfig::from_config_args(args).expect("ClientConfig::from_config_args")
 }
 

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-armonik = { version = "3.28.2-beta-0", features = [
+armonik = { git = "https://github.com/aneoconsulting/ArmoniK.Api.git", branch = "fl/fix-tcpnodelay", features = [
   "client",
   "server",
   "serde",
