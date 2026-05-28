@@ -27,5 +27,16 @@ thread_local = "1.1"
 crossbeam-deque = "0.8"
 tonic-web = "0.14"
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+tracing-flame = "0.2"
+inferno = { version = "0.12", default-features = false, features = ["multithreaded"] }
+arc-swap = "1.7"
+tokio-stream = { version = "0.1", features = ["net"] }
+
+[[bench]]
+name = "sessions_unary"
+harness = false
+
 [profile.release]
 lto = true

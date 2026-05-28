@@ -6,41 +6,29 @@ use std::{
 
 use armonik::reexports::tonic;
 use clap::Parser;
-use serde::{Deserialize, Serialize};
 use tracing as _;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 
-pub mod bag;
-pub mod cluster;
-pub mod service;
-pub mod utils;
+use load_balancer::{cluster, service, LbConfig, LogFormat};
+
+// These crates are pulled in by the library (and main.rs depends on the lib),
+// but the bin entry point doesn't reference them directly. Reference them as
+// `_` so cargo's `unused-crate-dependencies` lint stays happy.
+use async_stream as _;
+use crossbeam_deque as _;
+use quick_cache as _;
+use rayon as _;
+use rusqlite as _;
+use serde as _;
+use serde_json as _;
+// Use the older `extern crate` syntax to disambiguate from the
+// `thread_local!` macro in the prelude (a plain `use thread_local as _;`
+// is ambiguous; rustfmt strips a leading `::`).
+extern crate thread_local as _;
 
 #[cfg(not(miri))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogFormat {
-    #[default]
-    Pretty,
-    Json,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LbConfig {
-    pub clusters: HashMap<String, cluster::ClusterConfig<armonik::client::ClientConfigArgs>>,
-    #[serde(default)]
-    pub listen_ip: String,
-    #[serde(default)]
-    pub listen_port: u16,
-    #[serde(default)]
-    pub refresh_delay: String,
-    #[serde(default)]
-    pub log_format: LogFormat,
-    #[serde(flatten)]
-    pub service_options: service::ServiceOptions,
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Parser)]
 pub struct Cli {

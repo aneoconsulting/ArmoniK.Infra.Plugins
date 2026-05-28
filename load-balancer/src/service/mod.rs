@@ -195,6 +195,11 @@ impl Service {
         }
     }
 
+    #[doc(hidden)]
+    pub fn cluster_handle(&self, name: &str) -> Option<Arc<Cluster>> {
+        self.clusters.get(name).cloned()
+    }
+
     pub async fn add_sessions(
         &self,
         sessions: Vec<armonik::sessions::Raw>,
