@@ -26,7 +26,7 @@ impl AuthService for Service {
                         "Skipping cluster {} because it is marked as unavailable",
                         cluster.name
                     );
-                    return Err(tonic::Status::unavailable(format!(
+                    Err(tonic::Status::unavailable(format!(
                         "Cluster {} is unavailable",
                         cluster.name
                     )))?;
