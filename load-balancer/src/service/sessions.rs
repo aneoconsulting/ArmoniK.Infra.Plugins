@@ -62,7 +62,7 @@ impl SessionsService for Service {
                         _ => {
                             try_rpc!(bail Status::invalid_argument(format!(
                                 "Condition {:?} is not valid for the field {}",
-                                &cond.condition, column.grpc
+                                cond.condition, column.grpc
                             )));
                         }
                     }
