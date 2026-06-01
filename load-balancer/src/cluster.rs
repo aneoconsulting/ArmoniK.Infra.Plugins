@@ -148,7 +148,11 @@ impl Cluster {
     pub(crate) fn set_available(&self, value: bool) {
         let old = self.available.swap(value, Ordering::Relaxed);
         if old != value {
-            tracing::info!(name = self.name, available = value, "Cluster availability changed");
+            tracing::info!(
+                name = self.name,
+                available = value,
+                "Cluster availability changed"
+            );
         }
     }
 

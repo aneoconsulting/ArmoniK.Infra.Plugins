@@ -40,7 +40,10 @@ impl SubmitterService for Service {
                         "Skipping cluster {} because it is marked as unavailable",
                         cluster.name
                     );
-                    return Err(tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name)));
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
                 }
                 let mut client = cluster
                     .client(&context)
@@ -103,7 +106,8 @@ impl SubmitterService for Service {
 
         for (_, cluster) in self.clusters.iter().cycle().skip(i % n).take(n) {
             if !cluster.is_available() {
-                err = tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name));
+                err =
+                    tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name));
                 continue;
             }
             match cluster.client(&context).await {
@@ -157,7 +161,10 @@ impl SubmitterService for Service {
                         "Skipping cluster {} because it is marked as unavailable",
                         cluster.name
                     );
-                    return Err(tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name)));
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
                 }
                 let mut client = cluster
                     .client(&context)
@@ -213,7 +220,10 @@ impl SubmitterService for Service {
                         "Skipping cluster {} because it is marked as unavailable",
                         cluster.name
                     );
-                    return Err(tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name)));
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
                 }
                 let mut client = cluster
                     .client(&context)
@@ -271,7 +281,10 @@ impl SubmitterService for Service {
                         "Skipping cluster {} because it is marked as unavailable",
                         cluster.name
                     );
-                    return Err(tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name)));
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
                 }
                 let mut client = cluster
                     .client(&context)
@@ -350,7 +363,10 @@ impl SubmitterService for Service {
                         "Skipping cluster {} because it is marked as unavailable",
                         cluster.name
                     );
-                    return Err(tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name)));
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
                 }
                 let mut client = cluster
                     .client(&context)
@@ -434,7 +450,10 @@ impl SubmitterService for Service {
                         "Skipping cluster {} because it is marked as unavailable",
                         cluster.name
                     );
-                    return Err(tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name)));
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
                 }
                 let mut client = cluster
                     .client(&context)
@@ -491,7 +510,10 @@ impl SubmitterService for Service {
                     "Error while counting tasks, count could be partial: cluster {} is unavailable",
                     cluster.name
                 );
-                error.get_or_insert(tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name)));
+                error.get_or_insert(tonic::Status::unavailable(format!(
+                    "Cluster {} is unavailable",
+                    cluster.name
+                )));
                 continue;
             }
             let mut client = match cluster.client(&context).await {

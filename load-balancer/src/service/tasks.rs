@@ -182,7 +182,10 @@ impl TasksService for Service {
                         "Skipping cluster {} because it is marked as unavailable",
                         cluster.name
                     );
-                    return Err(tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name)));
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
                 }
                 let mut client = cluster
                     .client(&context)
@@ -238,7 +241,10 @@ impl TasksService for Service {
                         "Skipping cluster {} because it is marked as unavailable",
                         cluster.name
                     );
-                    return Err(tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name)));
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
                 }
                 let mut client = cluster
                     .client(&context)
@@ -296,7 +302,10 @@ impl TasksService for Service {
                         "Skipping cluster {} because it is marked as unavailable",
                         cluster.name
                     );
-                    return Err(tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name)));
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
                 }
                 let mut client = cluster
                     .client(&context)

@@ -309,7 +309,8 @@ impl SessionsService for Service {
 
         for cluster in self.clusters.values().cycle().skip(i % n).take(n) {
             if !cluster.is_available() {
-                err = tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name));
+                err =
+                    tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name));
                 continue;
             }
             match cluster.client(&context).await {
