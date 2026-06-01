@@ -305,10 +305,11 @@ impl SessionsService for Service {
             .counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        let mut err = None;
+        let mut err = tonic::Status::internal("No cluster");
 
         for cluster in self.clusters.values().cycle().skip(i % n).take(n) {
             if !cluster.is_available() {
+                err = tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name));
                 continue;
             }
             match cluster.client(&context).await {
@@ -344,17 +345,14 @@ impl SessionsService for Service {
                             .await?;
                             return Ok(response);
                         }
-                        Err(error) => err = Some(error.into_status()),
+                        Err(error) => err = error.into_status(),
                     }
                 }
-                Err(error) => err = Some(error.into_status()),
+                Err(error) => err = error.into_status(),
             }
         }
 
-        match err {
-            Some(err) => try_rpc!(bail err),
-            None => try_rpc!(bail tonic::Status::internal("No cluster")),
-        }
+        try_rpc!(bail err);
     }
 
     async fn pause(
