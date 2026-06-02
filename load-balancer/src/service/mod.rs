@@ -733,6 +733,7 @@ impl Service {
                 let mut client = match cluster.client(&Default::default()).await.map_err(IntoStatus::into_status) {
                     Ok(client) => client,
                     Err(err) => {
+                        cluster.set_available(false);
                         yield (cluster.clone(), Err(err));
                         return;
                     }
@@ -745,6 +746,7 @@ impl Service {
                 {
                     Ok(stream) => stream,
                     Err(err) => {
+                        cluster.set_available(false);
                         yield (cluster.clone(), Err(err));
                         return;
                     }
@@ -755,11 +757,16 @@ impl Service {
                     match response {
                         Ok(response) => yield (cluster.clone(), Result::<_, Status>::Ok(response)),
                         Err(err) => {
+                            cluster.set_available(false);
                             yield (cluster.clone(), Err(err));
                             return;
                         }
                     }
                 }
+                // Recovery requires the full stream to complete without error.
+                // A partial or flaky stream leaves the cluster marked unavailable
+                // until the next successful update_sessions run.
+                cluster.set_available(true);
             })
         });
 

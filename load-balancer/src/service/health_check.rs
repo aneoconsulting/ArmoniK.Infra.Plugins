@@ -23,6 +23,16 @@ impl HealthChecksService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.is_available() {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )))?;
+                }
                 let mut client = cluster
                     .client(&context)
                     .await

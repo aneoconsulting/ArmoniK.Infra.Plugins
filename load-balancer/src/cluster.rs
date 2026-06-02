@@ -3,6 +3,7 @@ use std::{
     hash::Hash,
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use armonik::{
@@ -67,6 +68,11 @@ pub struct Cluster {
     pub multiplex: bool,
     pub forward_headers: HashSet<String>,
     pub extra_headers: HashMap<String, String>,
+    // Updated only by `update_sessions` (the periodic background sync). Live RPC
+    // failures in service handlers do not write this flag, so a cluster that passes
+    // the sync but then starts failing requests will appear available until the
+    // next sync cycle.
+    available: AtomicBool,
 }
 
 impl std::fmt::Debug for Cluster {
@@ -130,6 +136,23 @@ impl Cluster {
                 .unwrap_or_default()
                 .into_iter()
                 .collect(),
+            available: AtomicBool::new(true),
+        }
+    }
+
+    pub fn is_available(&self) -> bool {
+        // Relaxed: this is a best-effort hint; no cross-thread data dependency on the value.
+        self.available.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_available(&self, value: bool) {
+        let old = self.available.swap(value, Ordering::Relaxed);
+        if old != value {
+            tracing::info!(
+                name = self.name,
+                available = value,
+                "Cluster availability changed"
+            );
         }
     }
 

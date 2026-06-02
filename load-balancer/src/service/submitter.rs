@@ -35,6 +35,16 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.is_available() {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -92,9 +102,14 @@ impl SubmitterService for Service {
             .counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        let mut err = None;
+        let mut err = tonic::Status::internal("No cluster");
 
         for (_, cluster) in self.clusters.iter().cycle().skip(i % n).take(n) {
+            if !cluster.is_available() {
+                err =
+                    tonic::Status::unavailable(format!("Cluster {} is unavailable", cluster.name));
+                continue;
+            }
             match cluster.client(&context).await {
                 Ok(mut client) => {
                     let span = client.span();
@@ -106,17 +121,14 @@ impl SubmitterService for Service {
 
                     match response {
                         Ok(response) => return Ok(response),
-                        Err(error) => err = Some(error.into_status()),
+                        Err(error) => err = error.into_status(),
                     }
                 }
-                Err(error) => err = Some(error.into_status()),
+                Err(error) => err = error.into_status(),
             }
         }
 
-        match err {
-            Some(err) => try_rpc!(bail err),
-            None => try_rpc!(bail tonic::Status::internal("No cluster")),
-        }
+        try_rpc!(bail err);
     }
 
     async fn cancel_session(
@@ -144,6 +156,16 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.is_available() {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -193,6 +215,16 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.is_available() {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -244,6 +276,16 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.is_available() {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -316,6 +358,16 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.is_available() {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -393,6 +445,16 @@ impl SubmitterService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.is_available() {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    return Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )));
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -443,6 +505,17 @@ impl SubmitterService for Service {
         let mut error = None;
 
         for cluster in self.clusters.values() {
+            if !cluster.is_available() {
+                tracing::warn!(
+                    "Error while counting tasks, count could be partial: cluster {} is unavailable",
+                    cluster.name
+                );
+                error.get_or_insert(tonic::Status::unavailable(format!(
+                    "Cluster {} is unavailable",
+                    cluster.name
+                )));
+                continue;
+            }
             let mut client = match cluster.client(&context).await {
                 Ok(client) => client,
                 Err(err) => {

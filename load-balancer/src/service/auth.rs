@@ -21,6 +21,16 @@ impl AuthService for Service {
             .clusters
             .values()
             .map(|cluster| async {
+                if !cluster.is_available() {
+                    tracing::debug!(
+                        "Skipping cluster {} because it is marked as unavailable",
+                        cluster.name
+                    );
+                    Err(tonic::Status::unavailable(format!(
+                        "Cluster {} is unavailable",
+                        cluster.name
+                    )))?;
+                }
                 let mut client = cluster
                     .client(&context)
                     .await
@@ -50,7 +60,7 @@ impl AuthService for Service {
                 },
                 Err(err) => {
                     tracing::warn!(
-                        "Error while getting curring user, user permissions could be partial: {:?}: {}",
+                        "Error while getting current user, user permissions could be partial: {:?}: {}",
                         err.code(),
                         err.message(),
                     );
