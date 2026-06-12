@@ -53,7 +53,7 @@ impl WorkerUpdater for PodUpdater {
                 Ok(())
             }
             // Pod not found can be safely ignored as it happens during scale down
-            Err(kube::Error::Api(kube::core::ErrorResponse { code: 404, .. })) => {
+            Err(kube::Error::Api(err)) if err.code == 404 => {
                 log::trace!("Could not patch pod {name} with cost {cost}: not found");
                 Ok(())
             }
