@@ -35,6 +35,8 @@ impl VersionsService for Service {
             })
             .collect::<FuturesUnordered<_>>();
 
+        // Component versions must be identical on every cluster; report a mismatch
+        // instead of merging.
         let mut versions = RecoverableResult::new();
         while let Some(response) = cluster_versions.next().await {
             match response {

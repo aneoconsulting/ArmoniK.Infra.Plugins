@@ -17,6 +17,7 @@ impl HealthChecksService for Service {
         _request: health_checks::check::Request,
         context: RequestContext,
     ) -> std::result::Result<health_checks::check::Response, tonic::Status> {
+        // Per-service status merged across clusters, keeping the most degraded one.
         let mut services = HashMap::<String, (health_checks::Status, String)>::new();
 
         let mut healths = self

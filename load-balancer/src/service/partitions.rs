@@ -28,6 +28,8 @@ impl PartitionsService for Service {
 
         let mut partitions = Vec::new();
 
+        // Partitions have no owning cluster: fan out the filtered listing to every
+        // available cluster, then sort and paginate the union in memory.
         let streams = self.clusters.values().map(|cluster| {
             let request = request.clone();
             let context =
@@ -53,6 +55,7 @@ impl PartitionsService for Service {
                     yield item;
                 }
 
+                // Sentinel so a cluster with zero items still registers a success below.
                 yield Ok(vec![]);
             })
         });
@@ -114,6 +117,8 @@ impl PartitionsService for Service {
         request: partitions::get::Request,
         context: RequestContext,
     ) -> std::result::Result<partitions::get::Response, tonic::Status> {
+        // Ask every cluster concurrently and return the first successful response
+        // (a cluster that does not know the partition just reports an error).
         let mut err = None;
 
         let mut partitions = self

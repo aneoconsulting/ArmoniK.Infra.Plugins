@@ -3,6 +3,15 @@ use std::sync::RwLock;
 use crossbeam_deque::{Stealer, Worker};
 use thread_local::ThreadLocal;
 
+/// Unordered pool of `T` optimized for concurrent check-in/check-out.
+///
+/// Each thread lazily gets its own lock-free LIFO deque: pushes and pops touch only the
+/// local deque on the hot path (no shared-lock contention), and LIFO order hands back the
+/// most recently returned, still-warm item. Stealing from other threads' deques happens
+/// only when the local one is empty. The bag is `Sync` with only `T: Send`.
+///
+/// Per-thread deques are registered on first use and never reclaimed, so the bag should
+/// only be used from long-lived pool threads (tokio/rayon workers).
 #[derive(Debug)]
 pub struct Bag<T: Send> {
     worker: ThreadLocal<Worker<T>>,
@@ -23,6 +32,7 @@ impl<T: Send> Bag<T> {
         Self::default()
     }
 
+    /// Get this thread's deque, registering its stealer on first use.
     fn worker(&self) -> &Worker<T> {
         self.worker.get_or(|| {
             let worker = Worker::new_lifo();
@@ -36,6 +46,9 @@ impl<T: Send> Bag<T> {
         if let Some(item) = worker.pop() {
             Some(item)
         } else {
+            // Local deque is empty: steal a batch from another thread. `Steal::Retry`
+            // signals a race with the owner, so loop until every stealer reports
+            // either Empty or Success.
             let mut retry = true;
             while retry {
                 retry = false;

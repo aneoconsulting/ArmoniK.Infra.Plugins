@@ -59,6 +59,8 @@ impl SubmitterService for Service {
             })
             .collect::<FuturesUnordered<_>>();
 
+        // Advertise the smallest chunk size accepted by any cluster, so a payload
+        // chunked for one cluster is valid for all of them.
         let mut size = RecoverableResult::<i32, _>::new();
         while let Some(conf) = configurations.next().await {
             match conf {
@@ -97,6 +99,9 @@ impl SubmitterService for Service {
     ) -> std::result::Result<submitter::create_session::Response, tonic::Status> {
         tracing::warn!("SubmitterService::CreateSession is deprecated, please use SessionsService::CreateSession instead");
 
+        // Same round-robin pinning as SessionsService::create, but the new session is
+        // not recorded locally: the first request referencing it resolves the cluster
+        // through the fan-out lookup.
         let n = self.clusters.len();
         let i = self
             .counter
@@ -413,6 +418,8 @@ impl SubmitterService for Service {
             if (is_error && request.stop_on_first_task_error)
                 || (is_cancelled && request.stop_on_first_task_cancellation)
             {
+                // Early stop requested: abandon the remaining waits and return a fresh
+                // global count instead of the partial per-cluster tallies.
                 std::mem::drop(wait_all);
 
                 return try_rpc!(map self
@@ -636,6 +643,9 @@ impl SubmitterService for Service {
                     )));
                 };
 
+                // Replay the init message, then forward the client's stream; a client
+                // error ends the forwarded stream and is smuggled through the oneshot
+                // so the select! below can fail the call with the original error.
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let mut tx = Some(tx);
 

@@ -28,6 +28,9 @@ impl EventsService for Service {
             returned_events,
         } = request;
 
+        // Events are served by the cluster owning the session: resolve it once, then
+        // proxy the subscription stream untouched (connection errors surface as the
+        // stream's first item).
         let cluster = try_rpc!(try self
             .get_cluster_from_session(&session_id)
             .await);

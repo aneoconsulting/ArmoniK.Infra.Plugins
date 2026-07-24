@@ -31,6 +31,10 @@ impl SessionsService for Service {
             ));
         };
 
+        // Listing is served from the local SQLite mirror instead of fanning out, so one
+        // query can filter, sort, and paginate across all clusters. The gRPC filter (an
+        // OR of ANDs) is translated below; user values are always bound as parameters,
+        // while column names come from the static `field_to_column_name` mapping.
         let build_span = tracing::trace_span!("build");
         let mut params = Vec::<Box<dyn rusqlite::ToSql + Send + Sync + 'static>>::new();
         let mut query_suffix = String::new();
@@ -48,6 +52,8 @@ impl SessionsService for Service {
                     query_suffix.push_str(sep);
                     sep = " AND ";
                     let column = try_rpc!(try field_to_column_name(cond.field.clone(), true));
+                    // The generic-option "column" embeds a '?' for the option key, which
+                    // must be bound before the condition's own parameters.
                     if let sessions::Field::TaskOptionGeneric(key) = &cond.field {
                         params.push(Box::new(key.clone()));
                     }
@@ -183,6 +189,7 @@ impl SessionsService for Service {
 
         query_suffix.push_str(term);
 
+        // Skip ORDER BY entirely when the sort field or direction is unspecified.
         match &request.sort {
             sessions::Sort {
                 field: sessions::Field::Raw(sessions::RawField::Unspecified),
@@ -234,6 +241,8 @@ impl SessionsService for Service {
             .db
             .call(tracing::trace_span!("transaction"), move |conn| {
                 let mut sessions = Vec::<armonik::sessions::Raw>::new();
+                // One transaction so COUNT(*) and the page read the same snapshot
+                // (unchecked: the connection is only reachable behind `&`).
                 let transaction = conn.unchecked_transaction()?;
 
                 let count_span = tracing::trace_span!("count");
@@ -300,6 +309,9 @@ impl SessionsService for Service {
         request: sessions::create::Request,
         context: RequestContext,
     ) -> std::result::Result<sessions::create::Response, tonic::Status> {
+        // Sessions are pinned to one cluster at creation: pick it round-robin, skipping
+        // unavailable clusters and moving on when one errors; the error reported to the
+        // client is the last one observed.
         let n = self.clusters.len();
         let i = self
             .counter
@@ -324,6 +336,9 @@ impl SessionsService for Service {
 
                     match response {
                         Ok(response) => {
+                            // Record the session -> cluster pinning right away so
+                            // follow-up requests route correctly before the next
+                            // background sync (status fields are placeholders until then).
                             self.add_sessions(
                                 vec![Session {
                                     session_id: response.session_id.clone(),
@@ -418,6 +433,8 @@ impl SessionsService for Service {
     }
 }
 
+/// JSON-serializable mirror of [`armonik::TaskOptions`] as stored in the `session`
+/// table (durations flattened to f64 seconds).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct TaskOptions {
     pub options: HashMap<String, String>,
@@ -432,6 +449,7 @@ pub(super) struct TaskOptions {
     pub engine_type: String,
 }
 
+// SQLite stores timestamps and durations as REAL seconds (epoch/interval).
 fn f64_to_timestamp(t: f64) -> armonik::reexports::prost_types::Timestamp {
     armonik::reexports::prost_types::Timestamp {
         seconds: t.trunc() as i64,
@@ -487,6 +505,7 @@ impl From<armonik::TaskOptions> for TaskOptions {
     }
 }
 
+/// Row of the `session` table: [`armonik::sessions::Raw`] plus the owning cluster name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct Session {
     /// The session ID.
@@ -580,6 +599,9 @@ impl std::fmt::Display for Column {
     }
 }
 
+/// Map a gRPC session field to its SQL column or JSON extraction expression. `filter`
+/// only tailors the error messages. The `TaskOptionGeneric` arm embeds a '?' placeholder
+/// for the option key, which the caller is responsible for binding.
 #[allow(clippy::result_large_err)]
 fn field_to_column_name(
     field: armonik::sessions::Field,
