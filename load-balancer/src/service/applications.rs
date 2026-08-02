@@ -25,6 +25,9 @@ impl ApplicationsService for Service {
 
         let mut applications = Vec::new();
 
+        // Applications have no owning cluster: fan out the filtered listing to every
+        // available cluster, then sort and paginate the union in memory (per-cluster
+        // pages cannot be stitched together).
         let streams = self.clusters.values().map(|cluster| {
             let request = request.clone();
             let context =
@@ -49,6 +52,7 @@ impl ApplicationsService for Service {
                     yield item;
                 }
 
+                // Sentinel so a cluster with zero items still registers a success below.
                 yield Ok(vec![]);
             })
         });
@@ -73,6 +77,7 @@ impl ApplicationsService for Service {
         }
         error.to_result(|| try_rpc!(bail tonic::Status::internal("No cluster")))?;
 
+        // Multi-key lexicographic sort; the single direction applies to every key.
         if !request.sort.fields.is_empty() {
             applications.sort_by(|a, b| {
                 for field in &request.sort.fields {

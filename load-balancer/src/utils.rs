@@ -2,6 +2,9 @@ use armonik::reexports::tonic::Status;
 
 use futures::{stream::futures_unordered, Stream, StreamExt};
 
+/// Implement a unary proxying endpoint: resolve the cluster owning the request's id
+/// (the `session`/`result`/`task` selector picks the resolver and the not-found message),
+/// then forward the request unchanged to that cluster and relay the response.
 macro_rules! impl_unary {
     ($self:ident.$service:ident, $request:ident, $context:ident, session) => {
         crate::utils::impl_unary!($self.$service, $request, $context, {get_cluster_from_session, session_id, "Session {} was not found"})
@@ -35,6 +38,9 @@ macro_rules! impl_unary {
 }
 pub(crate) use impl_unary;
 
+/// Error plumbing for RPC handlers: every arm converts the error to `tonic::Status` via
+/// [`IntoStatus`] and logs it as a warning. `try` unwraps or returns, `bail` returns
+/// unconditionally, `map` converts a `Result` in place.
 macro_rules! try_rpc {
     (try $res:expr) => {
         match $res {
@@ -60,6 +66,8 @@ macro_rules! try_rpc {
 
 pub(crate) use try_rpc;
 
+/// Convert transport, configuration, and database errors into `tonic::Status`, passing
+/// through gRPC statuses unchanged.
 pub trait IntoStatus {
     fn into_status(self) -> Status;
 }
@@ -111,6 +119,8 @@ where
     (stream, res)
 }
 
+/// Merge streams into a single one, yielding items in arrival order (first ready wins).
+/// Each stream has at most one pending `next` at a time and is dropped once exhausted.
 pub fn merge_streams<'a, S>(
     streams: impl IntoIterator<Item = S>,
 ) -> impl Stream<Item = <S as Stream>::Item> + 'a
@@ -132,6 +142,9 @@ where
     }
 }
 
+/// Outcome accumulator for fan-out calls where one success is enough: `success` upgrades
+/// the state (never downgraded by later errors), `error` keeps only the first error, and
+/// `Unknown` means nothing reported at all (every cluster skipped or none configured).
 #[derive(Debug, Clone)]
 pub enum RecoverableResult<T, E> {
     Unknown,

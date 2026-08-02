@@ -45,6 +45,8 @@ impl AuthService for Service {
             })
             .collect::<FuturesUnordered<_>>();
 
+        // The current user must be identical on every cluster: any divergence between
+        // two successful responses is a configuration error.
         let mut user = RecoverableResult::new();
 
         while let Some(candidate) = users.next().await {

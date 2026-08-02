@@ -15,6 +15,9 @@ use crate::{
 use super::Service;
 
 impl Service {
+    /// Determine the single cluster targeted by a result filter. Every OR clause must
+    /// pin a session id or result id with a string-equality condition, and all pinned
+    /// ids must resolve to the same cluster. `None` means the filter has no clause.
     pub async fn cluster_from_result_filter(
         self: Arc<Self>,
         filters: &results::filter::Or,
@@ -99,6 +102,7 @@ impl ResultsService for Service {
             .cluster_from_result_filter(&request.filters)
             .await)
         else {
+            // Unconstrained filter: nothing to route to, report an empty page.
             return Ok(results::list::Response {
                 results: Vec::new(),
                 page: request.page,
@@ -214,6 +218,8 @@ impl ResultsService for Service {
             })
             .collect::<FuturesUnordered<_>>();
 
+        // Advertise the smallest chunk size accepted by any cluster, so a payload
+        // chunked for one cluster is valid for all of them.
         let mut size = RecoverableResult::<i32, _>::new();
         while let Some(conf) = configurations.next().await {
             match conf {
@@ -265,6 +271,8 @@ impl ResultsService for Service {
             )));
         };
 
+        // Connect lazily inside the response stream: errors past this point surface as
+        // the stream's first item rather than failing the handler.
         let span = tracing::Span::current();
         Ok(async_stream::try_stream! {
             let mut client = try_rpc!(map cluster
@@ -308,6 +316,10 @@ impl ResultsService for Service {
                     )));
                 };
 
+                // The upstream call only accepts data chunks; any other item (second
+                // identifier, client error) ends the forwarded stream and is smuggled
+                // through the oneshot so the select! below can fail the whole upload
+                // with a precise status.
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let mut tx = Some(tx);
 

@@ -15,6 +15,9 @@ use crate::{
 use super::Service;
 
 impl Service {
+    /// Determine the single cluster targeted by a task filter. Every OR clause must pin
+    /// a session id or task id with a string-equality condition, and all pinned ids must
+    /// resolve to the same cluster. `None` means the filter has no clause at all.
     pub async fn cluster_from_task_filter(
         self: Arc<Self>,
         filters: &tasks::filter::Or,
@@ -105,6 +108,7 @@ impl TasksService for Service {
             .cluster_from_task_filter(&request.filters)
             .await)
         else {
+            // Unconstrained filter: nothing to route to, report an empty page.
             return Ok(tasks::list::Response {
                 tasks: Vec::new(),
                 page: request.page,
@@ -138,6 +142,7 @@ impl TasksService for Service {
             .cluster_from_task_filter(&request.filters)
             .await)
         else {
+            // Unconstrained filter: nothing to route to, report an empty page.
             return Ok(tasks::list_detailed::Response {
                 tasks: Vec::new(),
                 page: request.page,
@@ -173,6 +178,8 @@ impl TasksService for Service {
         request: tasks::cancel::Request,
         context: RequestContext,
     ) -> std::result::Result<tasks::cancel::Response, tonic::Status> {
+        // Task ids are not resolved to a cluster here: cancellation fans out to every
+        // available cluster and the per-cluster responses are concatenated.
         let mut futures = self
             .clusters
             .values()

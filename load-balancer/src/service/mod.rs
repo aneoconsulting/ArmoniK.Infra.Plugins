@@ -1,3 +1,5 @@
+// `Cluster` has interior mutability (availability flag, connection pool), but its
+// Eq/Hash only depend on the immutable connection config, so it is a valid map key.
 #![allow(clippy::mutable_key_type)]
 
 use std::{
@@ -32,10 +34,13 @@ mod submitter;
 mod tasks;
 mod versions;
 
+/// Routing options, flattened into the top level of [`crate::LbConfig`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServiceOptions {
+    /// None: in-memory database; "": ./lb.sqlite; anything else: used as SQLite path/URI
     sqlite_path: Option<String>,
+    /// Capacities of the id -> cluster caches
     session_cache_size: usize,
     result_cache_size: usize,
     task_cache_size: usize,
@@ -52,18 +57,27 @@ impl Default for ServiceOptions {
     }
 }
 
+/// Shared state behind every gRPC service implementation (a single `Arc<Service>` is
+/// registered for all of them in `main`).
 pub struct Service {
     clusters: HashMap<String, Arc<Cluster>>,
+    /// Clusters receiving requests whose ids cannot be resolved anywhere
     fallbacks: HashSet<Arc<Cluster>>,
+    /// Local mirror of every cluster's sessions, kept fresh by [`Service::update_sessions`]
     db: DB,
+    /// id -> owning-cluster caches, first step of the resolution ladder
     mapping_session: Cache<String, Arc<Cluster>>,
     mapping_result: Cache<String, Arc<Cluster>>,
     mapping_task: Cache<String, Arc<Cluster>>,
+    /// Round-robin position for session creation; only read (not incremented) when
+    /// picking a fallback, so the fallback choice is stable between creations
     counter: AtomicUsize,
+    /// Cached minimum data_chunk_max_size across clusters (0 = not fetched yet)
     result_preferred_size: AtomicI32,
     submitter_preferred_size: AtomicI32,
 }
 
+/// SQLite access with one lazily opened connection per thread.
 #[derive(Clone)]
 pub struct DB {
     connection: Arc<ThreadLocal<rusqlite::Connection>>,
@@ -72,6 +86,8 @@ pub struct DB {
 
 impl DB {
     fn new(path: Option<&str>) -> Self {
+        // cache=shared makes every thread-local connection see the same database, which
+        // is what turns the in-memory case into a single shared DB.
         let connection_string = match path {
             None => "file::memory:?cache=shared&psow=1",
             Some("") => "file:./lb.sqlite?cache=shared",
@@ -109,6 +125,9 @@ impl DB {
             .await
     }
 
+    /// Run blocking SQL on the rayon pool so it never stalls the tokio runtime. rayon
+    /// also caps its threads at the core count, which bounds the number of thread-local
+    /// SQLite connections (unlike `spawn_blocking` and its hundreds of threads).
     pub async fn call<Out, F>(&self, span: tracing::Span, f: F) -> Out
     where
         Out: Send + 'static,
@@ -143,6 +162,8 @@ impl Service {
     ) -> Self {
         let sqlite_path = options.sqlite_path;
         let db = DB::new(sqlite_path.as_deref());
+        // Timestamps and durations are stored as REAL seconds, lists and task options as
+        // JSON text; every filterable column is indexed.
         db.execute_batch(
             "BEGIN;
             CREATE TABLE IF NOT EXISTS session(
@@ -195,6 +216,8 @@ impl Service {
         }
     }
 
+    /// Bulk-upsert sessions into the local mirror: the whole batch is passed as a single
+    /// JSON array parameter and exploded server-side with `json_each`.
     pub async fn add_sessions(
         &self,
         sessions: Vec<armonik::sessions::Raw>,
@@ -270,11 +293,16 @@ impl Service {
             .map_err(IntoStatus::into_status)
     }
 
+    /// Resolve the owning cluster of each session id, trying in order: the in-memory
+    /// cache, the SQLite mirror, a live fan-out `list` on every cluster, then a fallback
+    /// cluster for ids still unknown. Fails only if some ids remain unresolved and no
+    /// fallback is configured.
     #[armonik::reexports::tracing::instrument(level = armonik::reexports::tracing::Level::TRACE, skip_all)]
     pub async fn get_cluster_from_sessions(
         &self,
         session_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
+        // Fast path: a single cluster that is also the fallback gets everything.
         if self.clusters.len() == 1 && self.fallbacks.len() == 1 {
             let cluster = self.fallbacks.iter().next().unwrap().clone();
 
@@ -304,6 +332,7 @@ impl Service {
             }
         }
 
+        // Cache misses: look the ids up in the SQLite mirror.
         if !missing_ids.is_empty() {
             let name_mapping;
             (name_mapping, missing_ids) = self.db.call(tracing::Span::current(), move |conn| {
@@ -344,6 +373,7 @@ impl Service {
             }
         }
 
+        // Still unknown: fan out an exact-match list to every cluster and record the hits.
         if !missing_ids.is_empty() {
             let filter = missing_ids
                 .iter()
@@ -410,6 +440,7 @@ impl Service {
                 }
             }
 
+            // Ids found nowhere: route them to a fallback, or fail if none is configured.
             if !missing_ids.is_empty() {
                 if self.fallbacks.is_empty() {
                     let mut message = String::new();
@@ -424,6 +455,8 @@ impl Service {
                     return Err(Status::unavailable(message));
                 }
 
+                // Deliberate load (not fetch_add): the fallback pick only changes when a
+                // session creation advances the counter, keeping it stable in between.
                 let cluster = self
                     .fallbacks
                     .iter()
@@ -452,11 +485,14 @@ impl Service {
         Ok(sessions.into_keys().next())
     }
 
+    /// Same resolution ladder as [`Service::get_cluster_from_sessions`], but results
+    /// have no SQLite mirror: cache, then fan-out `list` (caching hits), then fallback.
     #[armonik::reexports::tracing::instrument(level = armonik::reexports::tracing::Level::TRACE, skip_all)]
     pub async fn get_cluster_from_results(
         &self,
         result_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
+        // Fast path: a single cluster that is also the fallback gets everything.
         if self.clusters.len() == 1 && self.fallbacks.len() == 1 {
             let cluster = self.fallbacks.iter().next().unwrap().clone();
 
@@ -486,6 +522,7 @@ impl Service {
             }
         }
 
+        // Still unknown: fan out an exact-match list to every cluster and record the hits.
         if !missing_ids.is_empty() {
             let filter = missing_ids
                 .iter()
@@ -544,6 +581,7 @@ impl Service {
                 }
             }
 
+            // Ids found nowhere: route them to a fallback, or fail if none is configured.
             if !missing_ids.is_empty() {
                 if self.fallbacks.is_empty() {
                     let mut message = String::new();
@@ -558,6 +596,8 @@ impl Service {
                     return Err(Status::unavailable(message));
                 }
 
+                // Deliberate load (not fetch_add): the fallback pick only changes when a
+                // session creation advances the counter, keeping it stable in between.
                 let cluster = self
                     .fallbacks
                     .iter()
@@ -586,11 +626,14 @@ impl Service {
         Ok(results.into_keys().next())
     }
 
+    /// Same resolution ladder as [`Service::get_cluster_from_sessions`], but tasks have
+    /// no SQLite mirror: cache, then fan-out `list` (caching hits), then fallback.
     #[armonik::reexports::tracing::instrument(level = armonik::reexports::tracing::Level::TRACE, skip_all)]
     pub async fn get_cluster_from_tasks(
         &self,
         task_ids: &[&str],
     ) -> Result<HashMap<Arc<Cluster>, Vec<String>>, Status> {
+        // Fast path: a single cluster that is also the fallback gets everything.
         if self.clusters.len() == 1 && self.fallbacks.len() == 1 {
             let cluster = self.fallbacks.iter().next().unwrap().clone();
 
@@ -620,6 +663,7 @@ impl Service {
             }
         }
 
+        // Still unknown: fan out an exact-match list to every cluster and record the hits.
         if !missing_ids.is_empty() {
             let filter = missing_ids
                 .iter()
@@ -684,6 +728,7 @@ impl Service {
                 }
             }
 
+            // Ids found nowhere: route them to a fallback, or fail if none is configured.
             if !missing_ids.is_empty() {
                 if self.fallbacks.is_empty() {
                     let mut message = String::new();
@@ -698,6 +743,8 @@ impl Service {
                     return Err(Status::unavailable(message));
                 }
 
+                // Deliberate load (not fetch_add): the fallback pick only changes when a
+                // session creation advances the counter, keeping it stable in between.
                 let cluster = self
                     .fallbacks
                     .iter()
@@ -726,6 +773,9 @@ impl Service {
         Ok(results.into_keys().next())
     }
 
+    /// Background tick: stream every cluster's full session list into the SQLite mirror.
+    /// Sole writer of the availability flags: any failure marks the cluster unavailable,
+    /// and only a complete, error-free pass marks it available again.
     #[armonik::reexports::tracing::instrument(skip_all)]
     pub async fn update_sessions(&self) -> Result<(), Status> {
         let streams = self.clusters.values().map(|cluster| {

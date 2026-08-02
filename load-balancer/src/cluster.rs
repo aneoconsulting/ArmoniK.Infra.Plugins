@@ -22,10 +22,10 @@ use crate::bag::Bag;
 pub struct ClusterConfig<C = armonik::ClientConfig> {
     #[serde(flatten)]
     pub client: C,
-    /// Size of the connection pool to this cluster
+    /// Size of the connection pool to this cluster (default: 4 x tokio workers, 0 = unlimited)
     #[serde(default)]
     pub pool_size: Option<usize>,
-    /// Number of requests sent on a connection before it is recreated
+    /// Number of requests sent on a connection before it is recreated (default: 800, 0 = never)
     #[serde(default)]
     pub requests_per_connection: Option<usize>,
     /// Whether a connection can process multiple requests simultaneously
@@ -84,6 +84,8 @@ impl std::fmt::Debug for Cluster {
     }
 }
 
+// Cluster identity is its connection target, not its name: two configs pointing at the
+// same endpoint are the same cluster (and deduplicate in `HashSet<Arc<Cluster>>`).
 impl PartialEq for Cluster {
     fn eq(&self, other: &Self) -> bool {
         self.config.endpoint == other.config.endpoint
@@ -112,9 +114,14 @@ impl Cluster {
             name,
             config: config.client,
             client: Default::default(),
+            // The default stays below common HTTP/2 ingress per-connection request caps
+            // (nginx defaults to 1000) so upstreams never GOAWAY a connection mid-flight,
+            // while periodic reconnection re-spreads load across upstream replicas.
             requests_per_connection: NonZeroUsize::new(
                 config.requests_per_connection.unwrap_or(800),
             ),
+            // Empirical default: enough parallel connections to keep every runtime
+            // worker busy without unbounded connection growth.
             semaphore: NonZeroUsize::new(
                 config
                     .pool_size
@@ -160,10 +167,13 @@ impl Cluster {
         &self,
         context: &RequestContext,
     ) -> Result<ClusterClient<'_>, armonik::client::ConnectionError> {
+        // Acquire a pool slot first (no semaphore = unbounded pool).
         let permit = match &self.semaphore {
             Some(semaphore) => Some(semaphore.acquire().await.unwrap()),
             None => None,
         };
+        // Reuse an idle pooled connection if any, otherwise dial a new one with a fresh
+        // request budget.
         let (client, requests) = match self.client.pop() {
             Some(client) => client,
             None => {
@@ -172,6 +182,8 @@ impl Cluster {
             }
         };
 
+        // Headers sent upstream: the configured extras, then whitelisted headers
+        // forwarded from the incoming request (which take precedence).
         let mut headers = HashMap::new();
         for (key, value) in &self.extra_headers {
             headers.insert(
@@ -200,6 +212,9 @@ impl Cluster {
         };
 
         if self.multiplex {
+            // Multiplexed mode: hand the connection back to the pool immediately (and
+            // release the permit) so concurrent requests can share the same HTTP/2
+            // connection while this one is still in flight.
             client.release();
         }
 
@@ -207,6 +222,7 @@ impl Cluster {
     }
 }
 
+/// Channel wrapper that injects the cluster's headers into every outgoing request.
 #[derive(Clone)]
 pub struct ClusterClientInternal {
     client: armonik::Client,
@@ -235,6 +251,9 @@ impl tonic::client::GrpcService<tonic::body::Body> for ClusterClientInternal {
     }
 }
 
+/// Pooled connection handle. On drop, the connection goes back into the bag with a
+/// decremented request budget; once the budget hits zero it is discarded instead,
+/// forcing a reconnection.
 pub struct ClusterClient<'a> {
     internal: armonik::Client<ClusterClientInternal>,
     client: armonik::Client,
@@ -273,6 +292,8 @@ impl ClusterClient<'_> {
     pub fn span(&self) -> tracing::Span {
         self.span.clone()
     }
+    /// Return the connection to the pool (dropping it when its request budget is
+    /// exhausted) and release the pool slot.
     fn release(&mut self) {
         match self.requests {
             Some(size) => {
@@ -284,6 +305,7 @@ impl ClusterClient<'_> {
         }
         std::mem::drop(self.permit.take());
     }
+    /// Stream every session of the cluster, paging `list` requests until an empty page.
     pub async fn get_all_sessions(
         &mut self,
         filters: armonik::sessions::filter::Or,
@@ -323,6 +345,7 @@ impl ClusterClient<'_> {
         ))
     }
 
+    /// Stream every partition of the cluster, paging `list` requests until an empty page.
     pub async fn get_all_partitions(
         &mut self,
         filters: armonik::partitions::filter::Or,
@@ -361,6 +384,7 @@ impl ClusterClient<'_> {
         ))
     }
 
+    /// Stream every application of the cluster, paging `list` requests until an empty page.
     pub async fn get_all_applications(
         &mut self,
         filters: armonik::applications::filter::Or,

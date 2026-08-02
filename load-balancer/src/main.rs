@@ -27,6 +27,8 @@ pub enum LogFormat {
     Json,
 }
 
+/// Top-level configuration, deserialized from the config file and/or environment
+/// variables prefixed with `LoadBalancer__` (double underscore as separator).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LbConfig {
     pub clusters: HashMap<String, cluster::ClusterConfig<armonik::client::ClientConfigArgs>>,
@@ -34,10 +36,12 @@ pub struct LbConfig {
     pub listen_ip: String,
     #[serde(default)]
     pub listen_port: u16,
+    /// Seconds between two background session syncs (parsed as f64, so fractional works)
     #[serde(default)]
     pub refresh_delay: String,
     #[serde(default)]
     pub log_format: LogFormat,
+    /// Cache sizes and SQLite path, flattened into the top level of the config
     #[serde(flatten)]
     pub service_options: service::ServiceOptions,
 }
@@ -115,6 +119,8 @@ async fn wait_terminate() {
     win_signal!(ctrl_c, ctrl_close, ctrl_logoff, ctrl_shutdown);
 }
 
+// Macro rather than a function: each expansion instantiates the two `$layer` copies with
+// their own unnameable, format-specific types.
 macro_rules! tracing_init {
     ($layer:expr) => {
         {
@@ -206,8 +212,12 @@ async fn main() -> Result<(), eyre::Report> {
     let refresh_delay = std::time::Duration::from_secs_f64(conf.refresh_delay.parse()?);
 
     let router = tonic::transport::Server::builder()
+        // accept_http1 + GrpcWebLayer: support gRPC-Web clients (browser GUIs).
         .accept_http1(true)
         .trace_fn(|r| tracing::info_span!("gRPC", "path" = r.uri().path()))
+        // Precautionary bump (default: 20) made while reviewing the HTTP/2 rapid-reset
+        // advisories, so bursts of client-side stream cancellations do not error whole
+        // connections.
         .http2_max_pending_accept_reset_streams(Some(65536))
         .layer(tonic_web::GrpcWebLayer::new())
         .add_service(
@@ -249,6 +259,8 @@ async fn main() -> Result<(), eyre::Report> {
             armonik::api::v3::versions::versions_server::VersionsServer::from_arc(service.clone()),
         );
 
+    // Background sync: periodically mirror every cluster's sessions into SQLite. This
+    // keeps cross-cluster session listing coherent and drives the availability flags.
     let mut background_future = tokio::spawn({
         let service = service.clone();
 
@@ -270,6 +282,7 @@ async fn main() -> Result<(), eyre::Report> {
 
     tracing::info!("Application running");
 
+    // Run until the first of: background sync dies, server exits, or a signal arrives.
     tokio::select! {
         output = &mut background_future => {
             if let Err(err) = output {
