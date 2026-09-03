@@ -285,6 +285,11 @@ async fn main() -> Result<(), eyre::Report> {
     // Run until the first of: background sync dies, server exits, or a signal arrives.
     tokio::select! {
         output = &mut background_future => {
+            // The background task loops forever and never returns `Ok`, only `JoinError`
+            // on panic/cancellation. Whether that makes this pattern irrefutable depends
+            // on how the toolchain's never-type fallback infers the loop's output type,
+            // which has changed between toolchain versions, so silence both outcomes.
+            #[allow(irrefutable_let_patterns)]
             if let Err(err) = output {
                 tracing::error!("Background future had an error: {err:?}");
             }
