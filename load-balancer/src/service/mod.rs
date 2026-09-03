@@ -34,6 +34,68 @@ mod submitter;
 mod tasks;
 mod versions;
 
+/// SQLite `journal_mode`. Only `wal` lets the background session sync and concurrent
+/// readers proceed without blocking each other; every other mode makes a writer and a
+/// reader mutually exclusive. WAL needs a real file, so on an in-memory database SQLite
+/// silently keeps `memory` and this setting has no effect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JournalMode {
+    #[serde(alias = "DELETE")]
+    Delete,
+    #[serde(alias = "TRUNCATE")]
+    Truncate,
+    #[serde(alias = "PERSIST")]
+    Persist,
+    #[serde(alias = "MEMORY")]
+    Memory,
+    #[default]
+    #[serde(alias = "WAL")]
+    Wal,
+    #[serde(alias = "OFF")]
+    Off,
+}
+
+impl JournalMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Delete => "DELETE",
+            Self::Truncate => "TRUNCATE",
+            Self::Persist => "PERSIST",
+            Self::Memory => "MEMORY",
+            Self::Wal => "WAL",
+            Self::Off => "OFF",
+        }
+    }
+}
+
+/// SQLite `synchronous`. Only meaningful when `sqlite_path` names a file: it decides how
+/// often SQLite waits for the storage to flush.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Synchronous {
+    #[serde(alias = "OFF")]
+    Off,
+    #[default]
+    #[serde(alias = "NORMAL")]
+    Normal,
+    #[serde(alias = "FULL")]
+    Full,
+    #[serde(alias = "EXTRA")]
+    Extra,
+}
+
+impl Synchronous {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "OFF",
+            Self::Normal => "NORMAL",
+            Self::Full => "FULL",
+            Self::Extra => "EXTRA",
+        }
+    }
+}
+
 /// Routing options, flattened into the top level of [`crate::LbConfig`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -44,6 +106,17 @@ pub struct ServiceOptions {
     session_cache_size: usize,
     result_cache_size: usize,
     task_cache_size: usize,
+    /// Journal mode. `wal` is what keeps listings fast while the session sync writes, but
+    /// it only takes effect when `sqlite_path` names a file.
+    sqlite_journal_mode: JournalMode,
+    /// Durability. The session table is a mirror rebuilt from the clusters on every
+    /// refresh, so `off` is a reasonable choice for a disposable file.
+    sqlite_synchronous: Synchronous,
+    /// How long a statement waits for a lock before giving up, in milliseconds.
+    sqlite_busy_timeout: u64,
+    /// Page cache per connection: negative is KiB, positive is pages. There is one
+    /// connection per rayon worker, so the total is roughly this times the core count.
+    sqlite_cache_size: i64,
 }
 
 impl Default for ServiceOptions {
@@ -53,6 +126,10 @@ impl Default for ServiceOptions {
             session_cache_size: 10000,
             result_cache_size: 1000000,
             task_cache_size: 1000000,
+            sqlite_journal_mode: JournalMode::Wal,
+            sqlite_synchronous: Synchronous::Normal,
+            sqlite_busy_timeout: 5000,
+            sqlite_cache_size: -2000,
         }
     }
 }
@@ -82,27 +159,71 @@ pub struct Service {
 pub struct DB {
     connection: Arc<ThreadLocal<rusqlite::Connection>>,
     path: String,
+    /// Applied to every connection as it is opened, see [`DB::new`]
+    pragmas: Arc<str>,
 }
 
 impl DB {
-    fn new(path: Option<&str>) -> Self {
-        // cache=shared makes every thread-local connection see the same database, which
-        // is what turns the in-memory case into a single shared DB.
-        let connection_string = match path {
-            None => "file::memory:?cache=shared&psow=1",
-            Some("") => "file:./lb.sqlite?cache=shared",
+    fn new(options: &ServiceOptions) -> Self {
+        // Every connection needs to see the same database. A file does that on its own;
+        // for the in-memory case the `memdb` VFS provides a named store shared by every
+        // connection to the same URI. Note that shared-cache mode (`cache=shared`) would
+        // also share it, but it reports contention as SQLITE_LOCKED, which no busy
+        // handler ever retries, and serializes all connections behind a single mutex.
+        let connection_string = match options.sqlite_path.as_deref() {
+            None => "file:/armonik_load_balancer?vfs=memdb",
+            Some("") => "file:./lb.sqlite",
             Some(x) => x,
         };
+
+        // busy_timeout goes first so the statements below can wait rather than fail if
+        // another connection is already holding the database.
+        let pragmas = format!(
+            "PRAGMA busy_timeout = {};
+             PRAGMA journal_mode = {};
+             PRAGMA synchronous = {};
+             PRAGMA cache_size = {};",
+            options.sqlite_busy_timeout,
+            options.sqlite_journal_mode.as_str(),
+            options.sqlite_synchronous.as_str(),
+            options.sqlite_cache_size,
+        );
 
         Self {
             connection: Default::default(),
             path: String::from(connection_string),
+            pragmas: Arc::from(pragmas.as_str()),
         }
     }
 
     fn connection(&self) -> &rusqlite::Connection {
-        self.connection
-            .get_or(|| rusqlite::Connection::open(&self.path).unwrap())
+        self.connection.get_or(|| {
+            let connection = rusqlite::Connection::open(&self.path).unwrap_or_else(|err| {
+                panic!("Could not open SQLite database {}: {err}", self.path)
+            });
+            connection
+                .execute_batch(&self.pragmas)
+                .unwrap_or_else(|err| panic!("Could not configure SQLite database: {err}"));
+            connection
+        })
+    }
+
+    /// Truncate the write-ahead log, returning whether it actually ran to completion.
+    ///
+    /// A checkpoint can only reset the log while no reader is holding a snapshot, so
+    /// under continuous listing traffic the file grows without bound unless it is
+    /// truncated periodically. Outside WAL mode there is no log and SQLite answers
+    /// `(busy: 0, log: -1, checkpointed: -1)`, so this is a successful no-op.
+    pub async fn checkpoint(&self, span: tracing::Span) -> Result<bool, rusqlite::Error> {
+        self.call(span, move |db| {
+            // The first column is the busy flag: 1 means a reader held the log and
+            // nothing was reclaimed, which still reports as a successful statement.
+            db.connection()
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    Ok(row.get::<_, i64>(0)? == 0)
+                })
+        })
+        .await
     }
 
     pub async fn execute_batch(
@@ -160,8 +281,7 @@ impl Service {
         fallbacks: impl IntoIterator<Item = String>,
         options: ServiceOptions,
     ) -> Self {
-        let sqlite_path = options.sqlite_path;
-        let db = DB::new(sqlite_path.as_deref());
+        let db = DB::new(&options);
         // Timestamps and durations are stored as REAL seconds, lists and task options as
         // JSON text; every filterable column is indexed.
         db.execute_batch(
@@ -841,6 +961,339 @@ impl Service {
             }
         }
 
+        // The sync is the only bulk writer, so this is the natural place to reclaim the
+        // WAL it just produced.
+        match self.db.checkpoint(tracing::trace_span!("checkpoint")).await {
+            Ok(true) => {}
+            Ok(false) => tracing::debug!(
+                "Session database checkpoint was blocked by an open read, \
+                 the write-ahead log will be reclaimed on a later refresh"
+            ),
+            Err(err) => tracing::warn!("Could not checkpoint the session database: {}", err),
+        }
+
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options_from_yaml(yaml: &str) -> ServiceOptions {
+        // Mirrors how `main` builds the configuration, so this covers the `serde(flatten)`
+        // of ServiceOptions into LbConfig as well as the field names themselves.
+        let conf: crate::LbConfig = config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        conf.service_options
+    }
+
+    #[test]
+    fn sqlite_defaults() {
+        let options = ServiceOptions::default();
+        assert_eq!(options.sqlite_journal_mode, JournalMode::Wal);
+        assert_eq!(options.sqlite_synchronous, Synchronous::Normal);
+        assert_eq!(options.sqlite_busy_timeout, 5000);
+        assert_eq!(options.sqlite_cache_size, -2000);
+        assert_eq!(options_from_yaml("clusters: {}"), options);
+    }
+
+    #[test]
+    fn sqlite_options_are_configurable() {
+        let options = options_from_yaml(concat!(
+            "clusters: {}\n",
+            "sqlite_path: /dev/shm/lb.sqlite\n",
+            "sqlite_journal_mode: wal\n",
+            "sqlite_synchronous: \"off\"\n",
+            "sqlite_busy_timeout: 15000\n",
+            "sqlite_cache_size: -8000\n",
+        ));
+        assert_eq!(options.sqlite_path.as_deref(), Some("/dev/shm/lb.sqlite"));
+        assert_eq!(options.sqlite_journal_mode, JournalMode::Wal);
+        assert_eq!(options.sqlite_synchronous, Synchronous::Off);
+        assert_eq!(options.sqlite_busy_timeout, 15000);
+        assert_eq!(options.sqlite_cache_size, -8000);
+    }
+
+    #[test]
+    fn pragma_names_are_accepted_in_either_case() {
+        let lower = options_from_yaml(
+            "clusters: {}\nsqlite_journal_mode: delete\nsqlite_synchronous: full\n",
+        );
+        let upper = options_from_yaml(
+            "clusters: {}\nsqlite_journal_mode: DELETE\nsqlite_synchronous: FULL\n",
+        );
+        assert_eq!(lower.sqlite_journal_mode, JournalMode::Delete);
+        assert_eq!(lower.sqlite_synchronous, Synchronous::Full);
+        assert_eq!(lower, upper);
+    }
+
+    /// The pragmas must actually reach the connection, and must be harmless on the
+    /// in-memory default where WAL is not available.
+    #[test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    fn pragmas_are_applied_to_every_connection() {
+        let dir = std::env::temp_dir().join(format!("lb_pragma_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("lb.sqlite");
+
+        for (path, expected_journal_mode) in [
+            (None, "memory"),
+            (Some(format!("file:{}", file.display())), "wal"),
+        ] {
+            let options = ServiceOptions {
+                sqlite_path: path,
+                sqlite_journal_mode: JournalMode::Wal,
+                sqlite_synchronous: Synchronous::Off,
+                sqlite_busy_timeout: 15000,
+                sqlite_cache_size: -8000,
+                ..Default::default()
+            };
+            let db = DB::new(&options);
+            let connection = db.connection();
+
+            let journal_mode: String = connection
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap();
+            let busy_timeout: i64 = connection
+                .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                .unwrap();
+            let cache_size: i64 = connection
+                .query_row("PRAGMA cache_size", [], |row| row.get(0))
+                .unwrap();
+            let synchronous: i64 = connection
+                .query_row("PRAGMA synchronous", [], |row| row.get(0))
+                .unwrap();
+
+            assert_eq!(journal_mode, expected_journal_mode);
+            assert_eq!(busy_timeout, 15000);
+            assert_eq!(cache_size, -8000);
+            assert_eq!(synchronous, 0);
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Two connections to the default in-memory database must see the same rows: the
+    /// `memdb` VFS shares one store between them, a plain `:memory:` would not.
+    #[test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    fn in_memory_database_is_shared_between_connections() {
+        let db = DB::new(&ServiceOptions::default());
+        db.connection()
+            .execute_batch("CREATE TABLE IF NOT EXISTS shared(a); INSERT INTO shared VALUES (1);")
+            .unwrap();
+
+        let same = DB::new(&ServiceOptions::default());
+        let rows: i64 = same
+            .connection()
+            .query_row("SELECT count(*) FROM shared", [], |row| row.get(0))
+            .unwrap();
+        assert!(rows >= 1);
+    }
+
+    /// Every backend the configuration can select, so a change to the connection string
+    /// or the pragmas is exercised on all of them rather than on the default alone.
+    /// Rollback-journal modes are deliberately absent: a writer there waits for readers
+    /// to drain, which under sustained contention can exhaust `busy_timeout` and fail,
+    /// so asserting zero failures for them would be a flaky test rather than a true one.
+    fn concurrency_configurations(dir: &std::path::Path) -> Vec<(&'static str, ServiceOptions)> {
+        vec![
+            ("in-memory default", ServiceOptions::default()),
+            (
+                "file, WAL, synchronous=off",
+                ServiceOptions {
+                    sqlite_path: Some(format!("file:{}", dir.join("off.sqlite").display())),
+                    sqlite_synchronous: Synchronous::Off,
+                    ..Default::default()
+                },
+            ),
+            (
+                "file, WAL, synchronous=normal",
+                ServiceOptions {
+                    sqlite_path: Some(format!("file:{}", dir.join("normal.sqlite").display())),
+                    sqlite_synchronous: Synchronous::Normal,
+                    ..Default::default()
+                },
+            ),
+            (
+                "file, WAL, small cache and timeout",
+                ServiceOptions {
+                    sqlite_path: Some(format!("file:{}", dir.join("small.sqlite").display())),
+                    sqlite_cache_size: -64,
+                    sqlite_busy_timeout: 1000,
+                    ..Default::default()
+                },
+            ),
+        ]
+    }
+
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("lb_{name}_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Runs writers and `list_sessions`-shaped readers against one configuration and
+    /// returns whatever failed.
+    fn hammer(options: &ServiceOptions, duration: std::time::Duration) -> Vec<String> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Mutex;
+
+        let db = DB::new(options);
+        db.connection()
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS session(
+                    session_id TEXT PRIMARY KEY NOT NULL, cluster TEXT NOT NULL, status TINYINT NOT NULL);
+                 CREATE INDEX IF NOT EXISTS conc_status ON session(status);",
+            )
+            .unwrap();
+
+        let stop = AtomicBool::new(false);
+        let failures = Mutex::new(Vec::<String>::new());
+
+        std::thread::scope(|scope| {
+            for writer in 0..2 {
+                let (db, stop, failures) = (db.clone(), &stop, &failures);
+                scope.spawn(move || {
+                    let mut id = writer * 1_000_000;
+                    while !stop.load(Ordering::Relaxed) {
+                        let result = db.connection().execute(
+                            "INSERT OR REPLACE INTO session VALUES (?, 'cluster', 1)",
+                            [format!("session-{id}")],
+                        );
+                        if let Err(err) = result {
+                            failures.lock().unwrap().push(format!("write: {err}"));
+                        }
+                        id += 1;
+                    }
+                });
+            }
+            for _ in 0..4 {
+                let (db, stop, failures) = (db.clone(), &stop, &failures);
+                scope.spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        // The list_sessions shape: a count and a page in one transaction.
+                        let result = (|| -> Result<(), rusqlite::Error> {
+                            let connection = db.connection();
+                            let transaction = connection.unchecked_transaction()?;
+                            let _: i64 = transaction.query_row(
+                                "SELECT count(*) FROM session WHERE status = 1",
+                                [],
+                                |row| row.get(0),
+                            )?;
+                            transaction
+                                .prepare_cached(
+                                    "SELECT session_id FROM session WHERE status = 1 LIMIT 20",
+                                )?
+                                .query_map([], |row| row.get::<_, String>(0))?
+                                .collect::<Result<Vec<_>, _>>()?;
+                            transaction.commit()
+                        })();
+                        if let Err(err) = result {
+                            failures.lock().unwrap().push(format!("read: {err}"));
+                        }
+                    }
+                });
+            }
+
+            std::thread::sleep(duration);
+            stop.store(true, Ordering::Relaxed);
+        });
+
+        failures.into_inner().unwrap()
+    }
+
+    /// The reported bug: the session refresh and concurrent readers used to fail each
+    /// other outright, because shared-cache mode reports contention as SQLITE_LOCKED and
+    /// no busy handler ever retries it. Drives the real statements through the real
+    /// per-thread connections and requires that nothing fails, on every backend.
+    #[test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    fn concurrent_readers_and_writers_do_not_fail() {
+        let dir = scratch_dir("concurrency");
+
+        for (label, options) in concurrency_configurations(&dir) {
+            let failures = hammer(&options, std::time::Duration::from_millis(700));
+            assert!(
+                failures.is_empty(),
+                "{label}: {} operations failed, first few: {:?}",
+                failures.len(),
+                &failures[..failures.len().min(5)]
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The `unlock_notify` feature is only useful if it actually reached the bundled
+    /// SQLite, and nothing else in the build would notice if it were dropped.
+    #[test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    fn unlock_notify_is_compiled_in() {
+        let db = DB::new(&ServiceOptions::default());
+        let options: Vec<String> = db
+            .connection()
+            .prepare("PRAGMA compile_options")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            options.iter().any(|o| o == "ENABLE_UNLOCK_NOTIFY"),
+            "SQLite was built without unlock_notify: {options:?}"
+        );
+    }
+
+    /// `update_sessions` checkpoints on every pass, so this has to succeed on backends
+    /// that have no write-ahead log at all, otherwise every refresh would log a warning.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    async fn checkpoint_succeeds_in_every_journal_mode() {
+        let dir = scratch_dir("checkpoint");
+
+        for mode in [
+            JournalMode::Wal,
+            JournalMode::Delete,
+            JournalMode::Truncate,
+            JournalMode::Persist,
+            JournalMode::Memory,
+            JournalMode::Off,
+        ] {
+            for (backend, path) in [
+                ("in-memory", None),
+                (
+                    "file",
+                    Some(format!(
+                        "file:{}",
+                        dir.join(format!("{}.sqlite", mode.as_str())).display()
+                    )),
+                ),
+            ] {
+                let db = DB::new(&ServiceOptions {
+                    sqlite_path: path,
+                    sqlite_journal_mode: mode,
+                    ..Default::default()
+                });
+                db.connection()
+                    .execute_batch("CREATE TABLE IF NOT EXISTS t(a); INSERT INTO t VALUES (1);")
+                    .unwrap();
+
+                let checkpointed = db.checkpoint(tracing::Span::none()).await;
+                assert!(
+                    matches!(checkpointed, Ok(true)),
+                    "{backend}, journal_mode={}: {checkpointed:?}",
+                    mode.as_str()
+                );
+            }
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
