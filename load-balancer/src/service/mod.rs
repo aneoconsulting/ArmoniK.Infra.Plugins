@@ -844,3 +844,55 @@ impl Service {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::mpsc::sync_channel, thread, time::Duration};
+
+    use super::*;
+
+    /// Regression guard for the `unlock_notify` feature of rusqlite. In shared cache
+    /// mode SQLite locks whole tables between connections, so a writer holding
+    /// `session` makes a concurrent reader fail with SQLITE_LOCKED ("database table is
+    /// locked: session") rather than wait: `busy_timeout` does not cover those locks,
+    /// only `sqlite3_unlock_notify` does. Without the feature this read errors out
+    /// immediately instead of returning once the writer commits.
+    #[test]
+    #[cfg_attr(miri, ignore)] // the bundled SQLite is C code, which MIRI cannot run
+    fn read_waits_for_concurrent_writer() {
+        let db = DB::new(None);
+        db.connection()
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS session(session_id TEXT PRIMARY KEY NOT NULL)",
+            )
+            .unwrap();
+
+        // Rendezvous: the read must start while the writer holds the table lock.
+        let (locked_tx, locked_rx) = sync_channel(0);
+
+        thread::scope(|s| {
+            s.spawn(|| {
+                // Another thread means another connection, hence a real conflict in the
+                // shared cache instead of a reentrant access.
+                let transaction = db.connection().unchecked_transaction().unwrap();
+                transaction
+                    .execute("INSERT OR REPLACE INTO session VALUES (?)", ["waited"])
+                    .unwrap();
+                locked_tx.send(()).unwrap();
+                thread::sleep(Duration::from_millis(100));
+                transaction.commit().unwrap();
+            });
+
+            locked_rx.recv().unwrap();
+            let count = db
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM session WHERE session_id = ?",
+                    ["waited"],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1);
+        });
+    }
+}
