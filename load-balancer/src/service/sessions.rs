@@ -336,29 +336,44 @@ impl SessionsService for Service {
 
                     match response {
                         Ok(response) => {
-                            // Record the session -> cluster pinning right away so
-                            // follow-up requests route correctly before the next
-                            // background sync (status fields are placeholders until then).
-                            self.add_sessions(
-                                vec![Session {
-                                    session_id: response.session_id.clone(),
-                                    cluster: cluster.name.clone(),
-                                    status: armonik::SessionStatus::Running as i32 as u8,
-                                    client_submission: true,
-                                    worker_submission: true,
-                                    partition_ids: request.partition_ids,
-                                    default_task_options: request.default_task_options.into(),
-                                    created_at: None,
-                                    cancelled_at: None,
-                                    closed_at: None,
-                                    purged_at: None,
-                                    deleted_at: None,
-                                    duration: None,
-                                }
-                                .into()],
-                                cluster.clone(),
-                            )
-                            .await?;
+                            // Pin the session to its cluster right away so follow-up
+                            // requests route correctly before the next background sync
+                            // (status fields are placeholders until then).
+                            self.mapping_session
+                                .insert(response.session_id.clone(), cluster.clone());
+
+                            if let Err(err) = self
+                                .add_sessions(
+                                    vec![Session {
+                                        session_id: response.session_id.clone(),
+                                        cluster: cluster.name.clone(),
+                                        status: armonik::SessionStatus::Running as i32 as u8,
+                                        client_submission: true,
+                                        worker_submission: true,
+                                        partition_ids: request.partition_ids,
+                                        default_task_options: request.default_task_options.into(),
+                                        created_at: None,
+                                        cancelled_at: None,
+                                        closed_at: None,
+                                        purged_at: None,
+                                        deleted_at: None,
+                                        duration: None,
+                                    }
+                                    .into()],
+                                    cluster.clone(),
+                                )
+                                .await
+                            {
+                                // Best effort: the session exists upstream, so failing
+                                // here would lose its id. The refresh tick repairs the
+                                // mirror, and the cache above keeps routing working.
+                                tracing::warn!(
+                                    "Could not record session {} of cluster {}: {}",
+                                    response.session_id,
+                                    cluster.name,
+                                    err
+                                );
+                            }
                             return Ok(response);
                         }
                         Err(error) => err = error.into_status(),
