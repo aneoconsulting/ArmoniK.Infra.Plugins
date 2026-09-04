@@ -208,7 +208,7 @@ async fn main() -> Result<(), eyre::Report> {
         );
     }
 
-    let service = Arc::new(service::Service::new(clusters, fallbacks, conf.service_options).await);
+    let service = Arc::new(service::Service::new(clusters, fallbacks, conf.service_options).await?);
     let refresh_delay = std::time::Duration::from_secs_f64(conf.refresh_delay.parse()?);
 
     let router = tonic::transport::Server::builder()

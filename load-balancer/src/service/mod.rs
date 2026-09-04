@@ -4,7 +4,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    ops::Deref,
     sync::{
         atomic::{AtomicI32, AtomicUsize},
         Arc,
@@ -196,15 +195,13 @@ impl DB {
         }
     }
 
-    fn connection(&self) -> &rusqlite::Connection {
-        self.connection.get_or(|| {
-            let connection = rusqlite::Connection::open(&self.path).unwrap_or_else(|err| {
-                panic!("Could not open SQLite database {}: {err}", self.path)
-            });
-            connection
-                .execute_batch(&self.pragmas)
-                .unwrap_or_else(|err| panic!("Could not configure SQLite database: {err}"));
-            connection
+    /// Not cached on failure: `get_or_try` retries the open on the next call.
+    fn connection(&self) -> Result<&rusqlite::Connection, rusqlite::Error> {
+        self.connection.get_or_try(|| {
+            // rusqlite's message already names the path.
+            let connection = rusqlite::Connection::open(&self.path)?;
+            connection.execute_batch(&self.pragmas)?;
+            Ok(connection)
         })
     }
 
@@ -218,7 +215,7 @@ impl DB {
         self.call(span, move |db| {
             // The first column is the busy flag: 1 means a reader held the log and
             // nothing was reclaimed, which still reports as a successful statement.
-            db.connection()
+            db.connection()?
                 .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
                     Ok(row.get::<_, i64>(0)? == 0)
                 })
@@ -232,7 +229,7 @@ impl DB {
         span: tracing::Span,
     ) -> Result<(), rusqlite::Error> {
         let sql = sql.to_owned();
-        self.call(span, move |db| db.connection().execute_batch(&sql))
+        self.call(span, move |db| db.connection()?.execute_batch(&sql))
             .await
     }
     pub async fn execute(
@@ -242,7 +239,7 @@ impl DB {
         span: tracing::Span,
     ) -> Result<usize, rusqlite::Error> {
         let sql = sql.to_owned();
-        self.call(span, move |db| db.connection().execute(&sql, params))
+        self.call(span, move |db| db.connection()?.execute(&sql, params))
             .await
     }
 
@@ -267,20 +264,12 @@ impl DB {
     }
 }
 
-impl Deref for DB {
-    type Target = rusqlite::Connection;
-
-    fn deref(&self) -> &Self::Target {
-        self.connection()
-    }
-}
-
 impl Service {
     pub async fn new(
         clusters: impl IntoIterator<Item = (String, Cluster)>,
         fallbacks: impl IntoIterator<Item = String>,
         options: ServiceOptions,
-    ) -> Self {
+    ) -> Result<Self, rusqlite::Error> {
         let db = DB::new(&options);
         // Timestamps and durations are stored as REAL seconds, lists and task options as
         // JSON text; every filterable column is indexed.
@@ -313,8 +302,7 @@ impl Service {
             COMMIT;",
             tracing::trace_span!("create_table"),
         )
-        .await
-        .unwrap();
+        .await?;
         let clusters = clusters
             .into_iter()
             .map(|(name, cluster)| (name, Arc::new(cluster)))
@@ -323,7 +311,7 @@ impl Service {
             .into_iter()
             .map(|cluster_name| clusters[&cluster_name].clone())
             .collect();
-        Self {
+        Ok(Self {
             clusters,
             fallbacks,
             db,
@@ -333,7 +321,7 @@ impl Service {
             counter: AtomicUsize::new(0),
             result_preferred_size: AtomicI32::new(0),
             submitter_preferred_size: AtomicI32::new(0),
-        }
+        })
     }
 
     /// Bulk-upsert sessions into the local mirror: the whole batch is passed as a single
@@ -348,7 +336,7 @@ impl Service {
         self.db
             .call(span.clone(), move |conn| {
                 let prepare_span = tracing::trace_span!(parent: &span, "prepare").entered();
-                let mut stmt = conn.prepare_cached(
+                let mut stmt = conn.connection()?.prepare_cached(
                     "WITH data AS (
                         SELECT
                             e.value ->> 'session_id' as session_id,
@@ -459,7 +447,7 @@ impl Service {
                 let mut name_mapping = HashMap::<String, Vec<String>>::new();
 
                 let prepare_span = tracing::trace_span!("prepare");
-                let mut stmt = conn.prepare_cached("SELECT session_id, cluster FROM session WHERE session_id IN (SELECT e.value FROM json_each(?) e)")?;
+                let mut stmt = conn.connection()?.prepare_cached("SELECT session_id, cluster FROM session WHERE session_id IN (SELECT e.value FROM json_each(?) e)")?;
                 std::mem::drop(prepare_span);
 
                 let _execute_span = tracing::trace_span!("execute");
@@ -1054,7 +1042,7 @@ mod tests {
                 ..Default::default()
             };
             let db = DB::new(&options);
-            let connection = db.connection();
+            let connection = db.connection().unwrap();
 
             let journal_mode: String = connection
                 .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -1085,12 +1073,14 @@ mod tests {
     fn in_memory_database_is_shared_between_connections() {
         let db = DB::new(&ServiceOptions::default());
         db.connection()
+            .unwrap()
             .execute_batch("CREATE TABLE IF NOT EXISTS shared(a); INSERT INTO shared VALUES (1);")
             .unwrap();
 
         let same = DB::new(&ServiceOptions::default());
         let rows: i64 = same
             .connection()
+            .unwrap()
             .query_row("SELECT count(*) FROM shared", [], |row| row.get(0))
             .unwrap();
         assert!(rows >= 1);
@@ -1146,7 +1136,7 @@ mod tests {
         use std::sync::Mutex;
 
         let db = DB::new(options);
-        db.connection()
+        db.connection().unwrap()
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS session(
                     session_id TEXT PRIMARY KEY NOT NULL, cluster TEXT NOT NULL, status TINYINT NOT NULL);
@@ -1163,7 +1153,7 @@ mod tests {
                 scope.spawn(move || {
                     let mut id = writer * 1_000_000;
                     while !stop.load(Ordering::Relaxed) {
-                        let result = db.connection().execute(
+                        let result = db.connection().unwrap().execute(
                             "INSERT OR REPLACE INTO session VALUES (?, 'cluster', 1)",
                             [format!("session-{id}")],
                         );
@@ -1180,7 +1170,7 @@ mod tests {
                     while !stop.load(Ordering::Relaxed) {
                         // The list_sessions shape: a count and a page in one transaction.
                         let result = (|| -> Result<(), rusqlite::Error> {
-                            let connection = db.connection();
+                            let connection = db.connection().unwrap();
                             let transaction = connection.unchecked_transaction()?;
                             let _: i64 = transaction.query_row(
                                 "SELECT count(*) FROM session WHERE status = 1",
@@ -1239,6 +1229,7 @@ mod tests {
         let db = DB::new(&ServiceOptions::default());
         let options: Vec<String> = db
             .connection()
+            .unwrap()
             .prepare("PRAGMA compile_options")
             .unwrap()
             .query_map([], |row| row.get(0))
@@ -1282,6 +1273,7 @@ mod tests {
                     ..Default::default()
                 });
                 db.connection()
+                    .unwrap()
                     .execute_batch("CREATE TABLE IF NOT EXISTS t(a); INSERT INTO t VALUES (1);")
                     .unwrap();
 
@@ -1293,6 +1285,41 @@ mod tests {
                 );
             }
         }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A failed open must surface as an error, not a panic on a rayon worker.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    async fn a_database_that_cannot_be_opened_reports_instead_of_panicking() {
+        let dir = std::env::temp_dir().join(format!("lb_openfail_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let options = ServiceOptions {
+            sqlite_path: Some(format!("file:{}", dir.join("lb.sqlite").display())),
+            ..Default::default()
+        };
+
+        // startup
+        let err = Service::new([], [], options.clone())
+            .await
+            .map(|_| ()) // Service: !Debug
+            .expect_err("a database under a missing directory should not open");
+        assert_eq!(
+            err.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::CannotOpen)
+        );
+
+        // request path
+        let db = DB::new(&options);
+        let err = db
+            .execute_batch("SELECT 1;", tracing::Span::none())
+            .await
+            .expect_err("the failure should surface through the query helpers");
+        assert_eq!(
+            err.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::CannotOpen)
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

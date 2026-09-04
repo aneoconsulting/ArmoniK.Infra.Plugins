@@ -243,7 +243,7 @@ impl SessionsService for Service {
                 let mut sessions = Vec::<armonik::sessions::Raw>::new();
                 // One transaction so COUNT(*) and the page read the same snapshot
                 // (unchecked: the connection is only reachable behind `&`).
-                let transaction = conn.unchecked_transaction()?;
+                let transaction = conn.connection()?.unchecked_transaction()?;
 
                 let count_span = tracing::trace_span!("count");
                 let total =
