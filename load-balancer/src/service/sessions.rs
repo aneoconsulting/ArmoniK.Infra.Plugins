@@ -189,6 +189,13 @@ impl SessionsService for Service {
 
         query_suffix.push_str(term);
 
+        // Everything appended so far is the filter. COUNT(*) is unaffected by ordering,
+        // and carrying the ORDER BY into it costs a covering-index scan, so the count
+        // reuses only this prefix of the SQL, and correspondingly only the parameters
+        // bound by the filter.
+        let filter_len = query_suffix.len();
+        let filter_params = params.len();
+
         // Skip ORDER BY entirely when the sort field or direction is unspecified.
         match &request.sort {
             sessions::Sort {
@@ -234,7 +241,10 @@ impl SessionsService for Service {
             page_size,
             page * page_size
         );
-        let query_count = format!("SELECT COUNT(*) FROM session{query_suffix}");
+        let query_count = format!(
+            "SELECT COUNT(*) FROM session{}",
+            &query_suffix[..filter_len]
+        );
         std::mem::drop(build_span);
 
         let (sessions, total) = try_rpc!(try self
@@ -246,9 +256,11 @@ impl SessionsService for Service {
                 let transaction = conn.unchecked_transaction()?;
 
                 let count_span = tracing::trace_span!("count");
-                let total =
-                    transaction
-                        .query_row(&query_count, params_from_iter(&params), |row| row.get(0))?;
+                let total = transaction.query_row(
+                    &query_count,
+                    params_from_iter(&params[..filter_params]),
+                    |row| row.get(0),
+                )?;
                 std::mem::drop(count_span);
 
                 let prepare_span = tracing::trace_span!("prepare");

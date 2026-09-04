@@ -310,6 +310,7 @@ impl Service {
             CREATE INDEX IF NOT EXISTS session_purged_at ON session(purged_at);
             CREATE INDEX IF NOT EXISTS session_deleted_at ON session(deleted_at);
             CREATE INDEX IF NOT EXISTS session_duration ON session(duration);
+            CREATE INDEX IF NOT EXISTS session_status_created_at ON session(status, created_at);
             COMMIT;",
             tracing::trace_span!("create_table"),
         )
@@ -1096,6 +1097,19 @@ mod tests {
         assert!(rows >= 1);
     }
 
+    /// A private in-memory database. Tests that shape the `session` table differently
+    /// would otherwise collide over the single `memdb` store the default configuration
+    /// shares between every connection.
+    fn private_options(name: &str) -> ServiceOptions {
+        ServiceOptions {
+            sqlite_path: Some(format!(
+                "file:/test_{name}_{}?vfs=memdb",
+                std::process::id()
+            )),
+            ..Default::default()
+        }
+    }
+
     /// Every backend the configuration can select, so a change to the connection string
     /// or the pragmas is exercised on all of them rather than on the default alone.
     /// Rollback-journal modes are deliberately absent: a writer there waits for readers
@@ -1103,7 +1117,7 @@ mod tests {
     /// so asserting zero failures for them would be a flaky test rather than a true one.
     fn concurrency_configurations(dir: &std::path::Path) -> Vec<(&'static str, ServiceOptions)> {
         vec![
-            ("in-memory default", ServiceOptions::default()),
+            ("in-memory default", private_options("concurrency")),
             (
                 "file, WAL, synchronous=off",
                 ServiceOptions {
@@ -1295,5 +1309,117 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A listing filters on one column and sorts on another, which a single-column index
+    /// cannot serve at once: without a composite index SQLite materialises the whole
+    /// filtered set in a temp B-tree before paginating it.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    async fn listing_avoids_a_sort_for_the_common_filter_and_order() {
+        let service = Service::new([], [], private_options("plan")).await;
+
+        let plan: Vec<String> = service
+            .db
+            .call(tracing::Span::none(), |db| {
+                db.connection()
+                    .prepare(
+                        "EXPLAIN QUERY PLAN SELECT session_id FROM session
+                         WHERE (status = 1) ORDER BY created_at ASC LIMIT 20 OFFSET 100",
+                    )
+                    .unwrap()
+                    .query_map([], |row| row.get(3))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap()
+            })
+            .await;
+
+        let plan = plan.join(" | ");
+        assert!(
+            plan.contains("session_status_created_at"),
+            "the composite index should serve filter and order together: {plan}"
+        );
+        assert!(
+            !plan.contains("TEMP B-TREE"),
+            "the listing should not need to sort: {plan}"
+        );
+    }
+
+    /// `COUNT(*)` is unaffected by ordering, and carrying the page's ORDER BY into it
+    /// costs a covering-index scan. The two queries also bind different parameter counts,
+    /// so this exercises that split end to end through the real RPC.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    async fn listing_counts_and_pages_agree() {
+        use armonik::server::SessionsService;
+
+        let service = Arc::new(Service::new([], [], private_options("counts")).await);
+        // Rows are read back through serde, so the stored task options have to be a real
+        // `TaskOptions` document rather than an empty object.
+        let task_options =
+            serde_json::to_string(&sessions::TaskOptions::from(armonik::TaskOptions::default()))
+                .unwrap();
+        service
+            .db
+            .call(tracing::Span::none(), move |db| {
+                let connection = db.connection();
+                let mut insert = connection
+                    .prepare(
+                        "INSERT OR REPLACE INTO session
+                         VALUES (?, 'c', ?, 1, 0, '[]', ?, ?, NULL, NULL, NULL, NULL, 1.0)",
+                    )
+                    .unwrap();
+                for i in 0..50 {
+                    // half the rows carry the status the listing filters on
+                    insert
+                        .execute(rusqlite::params![
+                            format!("s{i:04}"),
+                            i % 2,
+                            task_options,
+                            1.7e9 + i as f64
+                        ])
+                        .unwrap();
+                }
+            })
+            .await;
+
+        let response = service
+            .clone()
+            .list(
+                armonik::sessions::list::Request {
+                    filters: armonik::sessions::filter::Or {
+                        or: vec![armonik::sessions::filter::And {
+                            and: vec![armonik::sessions::filter::Field {
+                                field: armonik::sessions::Field::Raw(
+                                    armonik::sessions::RawField::Status,
+                                ),
+                                condition: armonik::sessions::filter::Condition::Status(
+                                    armonik::sessions::filter::Status {
+                                        value: armonik::SessionStatus::Running,
+                                        operator: armonik::FilterStatusOperator::Equal,
+                                    },
+                                ),
+                            }],
+                        }],
+                    },
+                    sort: armonik::sessions::Sort {
+                        field: armonik::sessions::Field::Raw(
+                            armonik::sessions::RawField::CreatedAt,
+                        ),
+                        direction: armonik::SortDirection::Asc,
+                    },
+                    with_task_options: false,
+                    page: 0,
+                    page_size: 10,
+                },
+                Default::default(),
+            )
+            .await
+            .expect("listing should succeed");
+
+        // 25 of the 50 rows have status Running(1); the page is capped at 10.
+        assert_eq!(response.total, 25);
+        assert_eq!(response.sessions.len(), 10);
     }
 }
