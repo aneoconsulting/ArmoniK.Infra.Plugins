@@ -302,8 +302,6 @@ impl Service {
                 duration REAL
             );
             CREATE INDEX IF NOT EXISTS session_status ON session(status);
-            CREATE INDEX IF NOT EXISTS session_client_submission ON session(client_submission);
-            CREATE INDEX IF NOT EXISTS session_worker_submission ON session(worker_submission);
             CREATE INDEX IF NOT EXISTS session_created_at ON session(created_at);
             CREATE INDEX IF NOT EXISTS session_cancelled_at ON session(cancelled_at);
             CREATE INDEX IF NOT EXISTS session_closed_at ON session(closed_at);
