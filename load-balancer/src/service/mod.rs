@@ -1327,4 +1327,29 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// A full volume must come back as an error from the rayon worker, not a panic.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    async fn a_full_database_reports_instead_of_panicking() {
+        let db = DB::new(&ServiceOptions {
+            sqlite_path: Some(format!("file:/test_full_{}?vfs=memdb", std::process::id())),
+            ..Default::default()
+        });
+
+        // max_page_count caps the file the way a full volume does: both give SQLITE_FULL.
+        let err = db
+            .call(tracing::Span::none(), |db| -> Result<(), rusqlite::Error> {
+                let connection = db.connection()?;
+                connection.execute_batch("PRAGMA max_page_count = 32; CREATE TABLE t(a);")?;
+                for i in 0..100_000 {
+                    connection.execute("INSERT INTO t VALUES (?)", [i])?;
+                }
+                Ok(())
+            })
+            .await
+            .expect_err("filling the database should not panic the worker");
+
+        assert_eq!(err.sqlite_error_code(), Some(rusqlite::ErrorCode::DiskFull));
+    }
 }
