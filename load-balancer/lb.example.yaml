@@ -79,17 +79,17 @@ refresh_delay: 60
 # and session lookups slow down markedly while a refresh is writing. If that matters,
 # point this at a file. A tmpfs path such as /dev/shm/lb.sqlite keeps it in RAM and
 # needs no disk I/O, but /dev/shm defaults to 64 MB in Docker and Kubernetes and the
-# mirror needs roughly 700 bytes per session, so size it before switching.
+# mirror needs roughly 1 KB per session, so size it before switching.
 sqlite_path: ./sessions.sqlite
 # SQLite journal mode: wal, delete, truncate, persist, memory or off (default: wal)
 # Ignored for the in-memory database, which is always "memory".
-sqlite_journal_mode: memory
+sqlite_journal_mode: delete
 # SQLite durability: off, normal, full or extra (default: normal)
 # "normal" under WAL only flushes at checkpoints, which is already cheap. The session
 # table is a mirror rebuilt from the clusters on every refresh, so "off" is safe as
 # long as the file is disposable: a host crash may leave it corrupt, and the load
 # balancer does not currently delete it at startup.
-sqlite_synchronous: "off"
+sqlite_synchronous: full
 # Milliseconds a statement waits for a lock before failing (default: 5000)
 # Raising it trades failed requests for slow ones; it does not increase throughput.
 sqlite_busy_timeout: 1000
