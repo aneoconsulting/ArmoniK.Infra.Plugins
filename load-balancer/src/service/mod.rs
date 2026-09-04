@@ -333,6 +333,14 @@ impl Service {
     ) -> Result<(), Status> {
         let span = tracing::trace_span!("add_sessions");
 
+        let payload = serde_json::to_string(
+            &sessions
+                .into_iter()
+                .map(|session| Session::from_grpc(session, cluster.name.clone()))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|err| Status::internal(format!("Could not encode sessions: {err}")))?;
+
         self.db
             .call(span.clone(), move |conn| {
                 let prepare_span = tracing::trace_span!(parent: &span, "prepare").entered();
@@ -387,13 +395,7 @@ impl Service {
                 std::mem::drop(prepare_span);
 
                 let _execute_span = tracing::trace_span!(parent: &span, "execute").entered();
-                stmt.execute([serde_json::to_string(
-                    &sessions
-                        .into_iter()
-                        .map(|session| Session::from_grpc(session, cluster.name.clone()))
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap()])?;
+                stmt.execute([payload])?;
 
                 Result::<(), rusqlite::Error>::Ok(())
             })
@@ -443,6 +445,8 @@ impl Service {
         // Cache misses: look the ids up in the SQLite mirror.
         if !missing_ids.is_empty() {
             let name_mapping;
+            let ids = serde_json::to_string(&missing_ids)
+                .map_err(|err| Status::internal(format!("Could not encode session ids: {err}")))?;
             (name_mapping, missing_ids) = self.db.call(tracing::Span::current(), move |conn| {
                 let mut name_mapping = HashMap::<String, Vec<String>>::new();
 
@@ -451,7 +455,7 @@ impl Service {
                 std::mem::drop(prepare_span);
 
                 let _execute_span = tracing::trace_span!("execute");
-                let mut rows = stmt.query([serde_json::to_string(&missing_ids).unwrap()])?;
+                let mut rows = stmt.query([ids])?;
 
                 while let Some(row) = rows.next()? {
                     let session_id: String = row.get(0)?;
