@@ -72,7 +72,31 @@ refresh_delay: 60
 # Path to the SQLite database to store all the sessions (default: null)
 # If null, the database will be kept on-memory, and if empty (""), "lb.sqlite" will be used.
 # The path supports the URI syntax: https://www.sqlite.org/uri.html
+#
+# Concurrency note: only a real file can use WAL, and WAL is the only mode where the
+# background session refresh and concurrent listings do not block each other. On the
+# in-memory default a reader has to wait for the whole write transaction, so listings
+# and session lookups slow down markedly while a refresh is writing. If that matters,
+# point this at a file. A tmpfs path such as /dev/shm/lb.sqlite keeps it in RAM and
+# needs no disk I/O, but /dev/shm defaults to 64 MB in Docker and Kubernetes and the
+# mirror needs roughly 1 KB per session, so size it before switching.
 sqlite_path: ./sessions.sqlite
+# SQLite journal mode: wal, delete, truncate, persist, memory or off (default: wal)
+# Ignored for the in-memory database, which is always "memory".
+sqlite_journal_mode: delete
+# SQLite durability: off, normal, full or extra (default: normal)
+# "normal" under WAL only flushes at checkpoints, which is already cheap. The session
+# table is a mirror rebuilt from the clusters on every refresh, so "off" is safe as
+# long as the file is disposable: a host crash may leave it corrupt, and the load
+# balancer does not currently delete it at startup.
+sqlite_synchronous: full
+# Milliseconds a statement waits for a lock before failing (default: 5000)
+# Raising it trades failed requests for slow ones; it does not increase throughput.
+sqlite_busy_timeout: 1000
+# Page cache per connection, negative for KiB and positive for pages (default: -2000)
+# There is one connection per rayon worker thread, so the memory used is roughly this
+# value times the number of cores.
+sqlite_cache_size: -4000
 # Number of sessions to keep in the session-cluster mapping cache (default: 10000)
 # As a rule of thumb, a session entry in the cache should takes about a hundred bytes in memory.
 session_cache_size: 50000
