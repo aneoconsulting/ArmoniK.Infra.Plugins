@@ -5,6 +5,7 @@
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
+    rc::Rc,
     sync::{
         atomic::{AtomicI32, AtomicUsize},
         Arc,
@@ -204,6 +205,10 @@ impl DB {
             connection
                 .execute_batch(&self.pragmas)
                 .unwrap_or_else(|err| panic!("Could not configure SQLite database: {err}"));
+            // `rarray` is per-connection: it lets a whole id list be bound as one
+            // parameter, see [`Service::get_cluster_from_sessions`].
+            rusqlite::vtab::array::load_module(&connection)
+                .unwrap_or_else(|err| panic!("Could not register the rarray module: {err}"));
             connection
         })
     }
@@ -454,29 +459,48 @@ impl Service {
         // Cache misses: look the ids up in the SQLite mirror.
         if !missing_ids.is_empty() {
             let name_mapping;
-            (name_mapping, missing_ids) = self.db.call(tracing::Span::current(), move |conn| {
-                let mut name_mapping = HashMap::<String, Vec<String>>::new();
+            (name_mapping, missing_ids) = self
+                .db
+                .call(tracing::Span::current(), move |conn| {
+                    let mut name_mapping = HashMap::<String, Vec<String>>::new();
 
-                let prepare_span = tracing::trace_span!("prepare");
-                let mut stmt = conn.prepare_cached("SELECT session_id, cluster FROM session WHERE session_id IN (SELECT e.value FROM json_each(?) e)")?;
-                std::mem::drop(prepare_span);
+                    let prepare_span = tracing::trace_span!("prepare");
+                    let mut stmt = conn.prepare_cached(
+                        "SELECT session_id, cluster FROM session WHERE session_id IN rarray(?)",
+                    )?;
+                    std::mem::drop(prepare_span);
 
-                let _execute_span = tracing::trace_span!("execute");
-                let mut rows = stmt.query([serde_json::to_string(&missing_ids).unwrap()])?;
+                    let _execute_span = tracing::trace_span!("execute");
+                    // The whole id list travels as a single carray pointer: one cached
+                    // statement whatever the length, and no JSON round-trip. `Rc` is !Send,
+                    // so it is built here rather than captured by the closure.
+                    let ids: rusqlite::vtab::array::Array = Rc::new(
+                        missing_ids
+                            .iter()
+                            .map(|id| rusqlite::types::Value::Text(id.clone()))
+                            .collect(),
+                    );
+                    let mut rows = stmt.query([ids])?;
 
-                while let Some(row) = rows.next()? {
-                    let session_id: String = row.get(0)?;
-                    let cluster: String = row.get(1)?;
+                    while let Some(row) = rows.next()? {
+                        let session_id: String = row.get(0)?;
+                        let cluster: String = row.get(1)?;
 
-                    missing_ids.remove(session_id.as_str());
-                    match name_mapping.entry(cluster) {
-                        std::collections::hash_map::Entry::Occupied(mut occupied_entry) => occupied_entry.get_mut().push(session_id),
-                        std::collections::hash_map::Entry::Vacant(vacant_entry) => {vacant_entry.insert(vec![session_id]);},
+                        missing_ids.remove(session_id.as_str());
+                        match name_mapping.entry(cluster) {
+                            std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
+                                occupied_entry.get_mut().push(session_id)
+                            }
+                            std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                                vacant_entry.insert(vec![session_id]);
+                            }
+                        }
                     }
-                }
 
-                Result::<_, rusqlite::Error>::Ok((name_mapping, missing_ids))
-            }).await.map_err(IntoStatus::into_status)?;
+                    Result::<_, rusqlite::Error>::Ok((name_mapping, missing_ids))
+                })
+                .await
+                .map_err(IntoStatus::into_status)?;
 
             for (cluster_name, mut sessions_ids) in name_mapping {
                 let cluster = self.clusters[&cluster_name].clone();
@@ -1260,6 +1284,75 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `rarray` is registered per connection, so a connection opened without it would
+    /// only fail at runtime, on the session routing path.
+    #[test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    fn rarray_is_registered_on_every_connection() {
+        // Its own memdb: the default URI is process-global and `hammer` puts a table of
+        // the same name in it.
+        let db = DB::new(&ServiceOptions {
+            sqlite_path: Some(String::from("file:/armonik_load_balancer_rarray?vfs=memdb")),
+            ..Default::default()
+        });
+        db.connection()
+            .execute_batch(
+                "CREATE TABLE session(session_id TEXT PRIMARY KEY NOT NULL, cluster TEXT NOT NULL);
+                 INSERT INTO session VALUES ('a', 'c1'), ('b', 'c2'), ('c', 'c1');",
+            )
+            .unwrap();
+
+        let lookup = |ids: &[&str]| {
+            let ids: rusqlite::vtab::array::Array = Rc::new(
+                ids.iter()
+                    .map(|id| rusqlite::types::Value::Text(String::from(*id)))
+                    .collect(),
+            );
+            let mut found: Vec<(String, String)> = db
+                .connection()
+                .prepare_cached(
+                    "SELECT session_id, cluster FROM session WHERE session_id IN rarray(?)",
+                )
+                .unwrap()
+                .query_map([ids], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            found.sort();
+            found
+        };
+
+        // The same cached statement has to serve every list length, empty included.
+        assert_eq!(lookup(&[]), []);
+        assert_eq!(lookup(&["b"]), [(String::from("b"), String::from("c2"))]);
+        assert_eq!(
+            lookup(&["a", "c", "missing"]),
+            [
+                (String::from("a"), String::from("c1")),
+                (String::from("c"), String::from("c1")),
+            ]
+        );
+
+        // A second thread gets its own connection, which must register the module too.
+        let other = db.clone();
+        std::thread::spawn(move || {
+            other
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM session WHERE session_id IN rarray(?)",
+                    [
+                        Rc::new(vec![rusqlite::types::Value::Text(String::from("a"))])
+                            as rusqlite::vtab::array::Array,
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+        })
+        .join()
+        .map(|count| assert_eq!(count, 1))
+        .unwrap();
     }
 
     /// The `unlock_notify` feature is only useful if it actually reached the bundled
