@@ -302,14 +302,13 @@ impl Service {
                 duration REAL
             );
             CREATE INDEX IF NOT EXISTS session_status ON session(status);
-            CREATE INDEX IF NOT EXISTS session_client_submission ON session(client_submission);
-            CREATE INDEX IF NOT EXISTS session_worker_submission ON session(worker_submission);
             CREATE INDEX IF NOT EXISTS session_created_at ON session(created_at);
             CREATE INDEX IF NOT EXISTS session_cancelled_at ON session(cancelled_at);
             CREATE INDEX IF NOT EXISTS session_closed_at ON session(closed_at);
             CREATE INDEX IF NOT EXISTS session_purged_at ON session(purged_at);
             CREATE INDEX IF NOT EXISTS session_deleted_at ON session(deleted_at);
             CREATE INDEX IF NOT EXISTS session_duration ON session(duration);
+            CREATE INDEX IF NOT EXISTS session_status_created_at ON session(status, created_at);
             COMMIT;",
             tracing::trace_span!("create_table"),
         )
@@ -1096,6 +1095,38 @@ mod tests {
         assert!(rows >= 1);
     }
 
+    /// A private in-memory database. Tests that shape the `session` table differently
+    /// would otherwise collide over the single `memdb` store the default configuration
+    /// shares between every connection.
+    fn private_options(name: &str) -> ServiceOptions {
+        ServiceOptions {
+            sqlite_path: Some(format!(
+                "file:/test_{name}_{}?vfs=memdb",
+                std::process::id()
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// A service owning a single cluster, returned alongside it so tests can feed rows
+    /// through `add_sessions`. `name` names the private in-memory database.
+    async fn service_with_cluster(name: &str) -> (Arc<Service>, Arc<Cluster>) {
+        let cluster_name = String::from("c");
+        let service = Arc::new(
+            Service::new(
+                [(
+                    cluster_name.clone(),
+                    Cluster::new(cluster_name.clone(), Default::default()),
+                )],
+                [],
+                private_options(name),
+            )
+            .await,
+        );
+        let cluster = service.clusters[&cluster_name].clone();
+        (service, cluster)
+    }
+
     /// Every backend the configuration can select, so a change to the connection string
     /// or the pragmas is exercised on all of them rather than on the default alone.
     /// Rollback-journal modes are deliberately absent: a writer there waits for readers
@@ -1103,7 +1134,7 @@ mod tests {
     /// so asserting zero failures for them would be a flaky test rather than a true one.
     fn concurrency_configurations(dir: &std::path::Path) -> Vec<(&'static str, ServiceOptions)> {
         vec![
-            ("in-memory default", ServiceOptions::default()),
+            ("in-memory default", private_options("concurrency")),
             (
                 "file, WAL, synchronous=off",
                 ServiceOptions {
@@ -1295,5 +1326,112 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A listing filters on one column and sorts on another, which a single-column index
+    /// cannot serve at once: without a composite index SQLite materialises the whole
+    /// filtered set in a temp B-tree before paginating it.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    async fn listing_avoids_a_sort_for_the_common_filter_and_order() {
+        let (service, _cluster) = service_with_cluster("plan").await;
+
+        let plan: Vec<String> = service
+            .db
+            .call(tracing::Span::none(), |db| {
+                db.connection()
+                    .prepare(
+                        "EXPLAIN QUERY PLAN SELECT session_id FROM session
+                         WHERE (status = 1) ORDER BY created_at ASC LIMIT 20 OFFSET 100",
+                    )
+                    .unwrap()
+                    .query_map([], |row| row.get(3))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap()
+            })
+            .await;
+
+        let plan = plan.join(" | ");
+        assert!(
+            plan.contains("session_status_created_at"),
+            "the composite index should serve filter and order together: {plan}"
+        );
+        assert!(
+            !plan.contains("TEMP B-TREE"),
+            "the listing should not need to sort: {plan}"
+        );
+    }
+
+    /// `COUNT(*)` is unaffected by ordering, and carrying the page's ORDER BY into it
+    /// costs a covering-index scan. The two queries also bind different parameter counts,
+    /// so this exercises that split end to end through the real RPC.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    async fn listing_counts_and_pages_agree() {
+        use armonik::server::SessionsService;
+
+        let (service, cluster) = service_with_cluster("counts").await;
+
+        service
+            .add_sessions(
+                (0..50)
+                    .map(|i| armonik::sessions::Raw {
+                        session_id: format!("s{i:04}"),
+                        // half the rows carry the status the listing filters on
+                        status: if i % 2 == 0 {
+                            armonik::SessionStatus::Cancelled
+                        } else {
+                            armonik::SessionStatus::Running
+                        },
+                        created_at: Some(armonik::reexports::prost_types::Timestamp {
+                            seconds: 1_700_000_000 + i,
+                            nanos: 0,
+                        }),
+                        ..Default::default()
+                    })
+                    .collect(),
+                cluster,
+            )
+            .await
+            .expect("sessions should be stored");
+
+        let response = service
+            .clone()
+            .list(
+                armonik::sessions::list::Request {
+                    filters: armonik::sessions::filter::Or {
+                        or: vec![armonik::sessions::filter::And {
+                            and: vec![armonik::sessions::filter::Field {
+                                field: armonik::sessions::Field::Raw(
+                                    armonik::sessions::RawField::Status,
+                                ),
+                                condition: armonik::sessions::filter::Condition::Status(
+                                    armonik::sessions::filter::Status {
+                                        value: armonik::SessionStatus::Running,
+                                        operator: armonik::FilterStatusOperator::Equal,
+                                    },
+                                ),
+                            }],
+                        }],
+                    },
+                    sort: armonik::sessions::Sort {
+                        field: armonik::sessions::Field::Raw(
+                            armonik::sessions::RawField::CreatedAt,
+                        ),
+                        direction: armonik::SortDirection::Asc,
+                    },
+                    with_task_options: false,
+                    page: 0,
+                    page_size: 10,
+                },
+                Default::default(),
+            )
+            .await
+            .expect("listing should succeed");
+
+        // 25 of the 50 rows have status Running(1); the page is capped at 10.
+        assert_eq!(response.total, 25);
+        assert_eq!(response.sessions.len(), 10);
     }
 }

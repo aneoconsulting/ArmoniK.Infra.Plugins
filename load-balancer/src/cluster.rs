@@ -18,7 +18,7 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::bag::Bag;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ClusterConfig<C = armonik::ClientConfig> {
     #[serde(flatten)]
     pub client: C,

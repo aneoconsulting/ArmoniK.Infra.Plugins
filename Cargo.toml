@@ -2,6 +2,9 @@
 resolver = "2"
 members = ["pdc-update", "load-balancer"]
 
+[profile.release]
+lto = true
+
 [profile.release-with-debug]
 inherits = "release"
 debug = true
