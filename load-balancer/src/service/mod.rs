@@ -1108,6 +1108,25 @@ mod tests {
         }
     }
 
+    /// A service owning a single cluster, returned alongside it so tests can feed rows
+    /// through `add_sessions`. `name` names the private in-memory database.
+    async fn service_with_cluster(name: &str) -> (Arc<Service>, Arc<Cluster>) {
+        let cluster_name = String::from("c");
+        let service = Arc::new(
+            Service::new(
+                [(
+                    cluster_name.clone(),
+                    Cluster::new(cluster_name.clone(), Default::default()),
+                )],
+                [],
+                private_options(name),
+            )
+            .await,
+        );
+        let cluster = service.clusters[&cluster_name].clone();
+        (service, cluster)
+    }
+
     /// Every backend the configuration can select, so a change to the connection string
     /// or the pragmas is exercised on all of them rather than on the default alone.
     /// Rollback-journal modes are deliberately absent: a writer there waits for readers
@@ -1315,7 +1334,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
     async fn listing_avoids_a_sort_for_the_common_filter_and_order() {
-        let service = Service::new([], [], private_options("plan")).await;
+        let (service, _cluster) = service_with_cluster("plan").await;
 
         let plan: Vec<String> = service
             .db
@@ -1352,35 +1371,30 @@ mod tests {
     async fn listing_counts_and_pages_agree() {
         use armonik::server::SessionsService;
 
-        let service = Arc::new(Service::new([], [], private_options("counts")).await);
-        // Rows are read back through serde, so the stored task options have to be a real
-        // `TaskOptions` document rather than an empty object.
-        let task_options =
-            serde_json::to_string(&sessions::TaskOptions::from(armonik::TaskOptions::default()))
-                .unwrap();
+        let (service, cluster) = service_with_cluster("counts").await;
+
         service
-            .db
-            .call(tracing::Span::none(), move |db| {
-                let connection = db.connection();
-                let mut insert = connection
-                    .prepare(
-                        "INSERT OR REPLACE INTO session
-                         VALUES (?, 'c', ?, 1, 0, '[]', ?, ?, NULL, NULL, NULL, NULL, 1.0)",
-                    )
-                    .unwrap();
-                for i in 0..50 {
-                    // half the rows carry the status the listing filters on
-                    insert
-                        .execute(rusqlite::params![
-                            format!("s{i:04}"),
-                            i % 2,
-                            task_options,
-                            1.7e9 + i as f64
-                        ])
-                        .unwrap();
-                }
-            })
-            .await;
+            .add_sessions(
+                (0..50)
+                    .map(|i| armonik::sessions::Raw {
+                        session_id: format!("s{i:04}"),
+                        // half the rows carry the status the listing filters on
+                        status: if i % 2 == 0 {
+                            armonik::SessionStatus::Cancelled
+                        } else {
+                            armonik::SessionStatus::Running
+                        },
+                        created_at: Some(armonik::reexports::prost_types::Timestamp {
+                            seconds: 1_700_000_000 + i,
+                            nanos: 0,
+                        }),
+                        ..Default::default()
+                    })
+                    .collect(),
+                cluster,
+            )
+            .await
+            .expect("sessions should be stored");
 
         let response = service
             .clone()
