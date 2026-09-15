@@ -280,6 +280,114 @@ impl Deref for DB {
     }
 }
 
+/// The local session mirror. Timestamps and durations are stored as REAL seconds, lists
+/// and task options as JSON text; every filterable column is indexed.
+const CREATE_SESSION_TABLE: &str = "BEGIN;
+    CREATE TABLE IF NOT EXISTS session(
+        session_id TEXT PRIMARY KEY NOT NULL,
+        cluster TEXT NOT NULL,
+        status TINYINT NOT NULL,
+        client_submission BOOL NOT NULL,
+        worker_submission BOOL NOT NULL,
+        partition_ids JSONB,
+        default_task_options JSONB,
+        created_at REAL,
+        cancelled_at REAL,
+        closed_at REAL,
+        purged_at REAL,
+        deleted_at REAL,
+        duration REAL
+    );
+    CREATE INDEX IF NOT EXISTS session_status ON session(status);
+    CREATE INDEX IF NOT EXISTS session_created_at ON session(created_at);
+    CREATE INDEX IF NOT EXISTS session_cancelled_at ON session(cancelled_at);
+    CREATE INDEX IF NOT EXISTS session_closed_at ON session(closed_at);
+    CREATE INDEX IF NOT EXISTS session_purged_at ON session(purged_at);
+    CREATE INDEX IF NOT EXISTS session_deleted_at ON session(deleted_at);
+    CREATE INDEX IF NOT EXISTS session_duration ON session(duration);
+    CREATE INDEX IF NOT EXISTS session_status_created_at ON session(status, created_at);
+    COMMIT;";
+
+/// A `session` column, paired with how to read it out of a [`Session`]. Both the upsert
+/// statement and the arrays bound to it are derived from this list, so the column order
+/// and the parameter order cannot drift apart.
+type SessionColumn = (&'static str, fn(&Session) -> rusqlite::types::Value);
+
+const SESSION_COLUMNS: [SessionColumn; 13] = {
+    use rusqlite::types::Value;
+
+    fn text(value: &str) -> Value {
+        Value::Text(String::from(value))
+    }
+    // Nested values keep their JSON encoding: SQLite has no composite type, and
+    // `service::sessions` reads these columns back with `json()`.
+    fn json<T: Serialize>(value: &T) -> Value {
+        Value::Text(serde_json::to_string(value).unwrap())
+    }
+    // Timestamps and durations are REAL seconds, and every one of them is optional.
+    fn real(value: Option<f64>) -> Value {
+        value.map_or(Value::Null, Value::Real)
+    }
+
+    [
+        ("session_id", |s| text(&s.session_id)),
+        ("cluster", |s| text(&s.cluster)),
+        ("status", |s| Value::Integer(s.status as i64)),
+        ("client_submission", |s| {
+            Value::Integer(s.client_submission as i64)
+        }),
+        ("worker_submission", |s| {
+            Value::Integer(s.worker_submission as i64)
+        }),
+        ("partition_ids", |s| json(&s.partition_ids)),
+        ("default_task_options", |s| json(&s.default_task_options)),
+        ("created_at", |s| real(s.created_at)),
+        ("cancelled_at", |s| real(s.cancelled_at)),
+        ("closed_at", |s| real(s.closed_at)),
+        ("purged_at", |s| real(s.purged_at)),
+        ("deleted_at", |s| real(s.deleted_at)),
+        ("duration", |s| real(s.duration)),
+    ]
+};
+
+/// Bulk upsert built from [`SESSION_COLUMNS`]: one `rarray` parameter per column, all of
+/// them the same length, zipped back into rows on their shared array position.
+///
+/// `MATERIALIZED` is load-bearing. `rarray` only answers `pointer =` constraints in its
+/// `best_index`, so a `rowid` join predicate cannot be pushed into it and joining the
+/// arrays directly degenerates into a 13-way cross product. Spilling each one into an
+/// ephemeral table first lets SQLite build an automatic index over the positions.
+static UPSERT_SESSIONS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let names = SESSION_COLUMNS.map(|(name, _)| name);
+    let driver = names[0];
+
+    let sources = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            format!(
+                "{name}_src(r, v) AS MATERIALIZED (SELECT rowid, value FROM rarray(?{}))",
+                i + 1
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = names
+        .iter()
+        .map(|name| format!("{name}_src.v"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let joins = names[1..]
+        .iter()
+        .map(|name| format!(" JOIN {name}_src ON {name}_src.r = {driver}_src.r"))
+        .collect::<String>();
+
+    format!(
+        "WITH {sources} INSERT OR REPLACE INTO session({}) SELECT {values} FROM {driver}_src{joins}",
+        names.join(", "),
+    )
+});
+
 impl Service {
     pub async fn new(
         clusters: impl IntoIterator<Item = (String, Cluster)>,
@@ -287,38 +395,9 @@ impl Service {
         options: ServiceOptions,
     ) -> Self {
         let db = DB::new(&options);
-        // Timestamps and durations are stored as REAL seconds, lists and task options as
-        // JSON text; every filterable column is indexed.
-        db.execute_batch(
-            "BEGIN;
-            CREATE TABLE IF NOT EXISTS session(
-                session_id TEXT PRIMARY KEY NOT NULL,
-                cluster TEXT NOT NULL,
-                status TINYINT NOT NULL,
-                client_submission BOOL NOT NULL,
-                worker_submission BOOL NOT NULL,
-                partition_ids JSONB,
-                default_task_options JSONB,
-                created_at REAL,
-                cancelled_at REAL,
-                closed_at REAL,
-                purged_at REAL,
-                deleted_at REAL,
-                duration REAL
-            );
-            CREATE INDEX IF NOT EXISTS session_status ON session(status);
-            CREATE INDEX IF NOT EXISTS session_created_at ON session(created_at);
-            CREATE INDEX IF NOT EXISTS session_cancelled_at ON session(cancelled_at);
-            CREATE INDEX IF NOT EXISTS session_closed_at ON session(closed_at);
-            CREATE INDEX IF NOT EXISTS session_purged_at ON session(purged_at);
-            CREATE INDEX IF NOT EXISTS session_deleted_at ON session(deleted_at);
-            CREATE INDEX IF NOT EXISTS session_duration ON session(duration);
-            CREATE INDEX IF NOT EXISTS session_status_created_at ON session(status, created_at);
-            COMMIT;",
-            tracing::trace_span!("create_table"),
-        )
-        .await
-        .unwrap();
+        db.execute_batch(CREATE_SESSION_TABLE, tracing::trace_span!("create_table"))
+            .await
+            .unwrap();
         let clusters = clusters
             .into_iter()
             .map(|(name, cluster)| (name, Arc::new(cluster)))
@@ -340,8 +419,8 @@ impl Service {
         }
     }
 
-    /// Bulk-upsert sessions into the local mirror: the whole batch is passed as a single
-    /// JSON array parameter and exploded server-side with `json_each`.
+    /// Bulk-upsert sessions into the local mirror: the batch is transposed into one
+    /// `rarray` per column and reassembled server-side, see [`UPSERT_SESSIONS`].
     pub async fn add_sessions(
         &self,
         sessions: Vec<armonik::sessions::Raw>,
@@ -352,64 +431,19 @@ impl Service {
         self.db
             .call(span.clone(), move |conn| {
                 let prepare_span = tracing::trace_span!(parent: &span, "prepare").entered();
-                let mut stmt = conn.prepare_cached(
-                    "WITH data AS (
-                        SELECT
-                            e.value ->> 'session_id' as session_id,
-                            e.value ->> 'cluster' as cluster,
-                            e.value ->> 'status' as status,
-                            e.value ->> 'client_submission' as client_submission,
-                            e.value ->> 'worker_submission' as worker_submission,
-                            e.value ->> 'partition_ids' as partition_ids,
-                            e.value ->> 'default_task_options' as default_task_options,
-                            e.value ->> 'created_at' as created_at,
-                            e.value ->> 'cancelled_at' as cancelled_at,
-                            e.value ->> 'closed_at' as closed_at,
-                            e.value ->> 'purged_at' as purged_at,
-                            e.value ->> 'deleted_at' as deleted_at,
-                            e.value ->> 'duration' as duration
-                        FROM json_each(?) e
-                    )
-                    INSERT OR REPLACE INTO session(
-                        session_id,
-                        cluster,
-                        status,
-                        client_submission,
-                        worker_submission,
-                        partition_ids,
-                        default_task_options,
-                        created_at,
-                        cancelled_at,
-                        closed_at,
-                        purged_at,
-                        deleted_at,
-                        duration
-                    ) SELECT
-                        session_id,
-                        cluster,
-                        status,
-                        client_submission,
-                        worker_submission,
-                        partition_ids,
-                        default_task_options,
-                        created_at,
-                        cancelled_at,
-                        closed_at,
-                        purged_at,
-                        deleted_at,
-                        duration
-                    FROM data",
-                )?;
+                let mut stmt = conn.prepare_cached(&UPSERT_SESSIONS)?;
                 std::mem::drop(prepare_span);
 
                 let _execute_span = tracing::trace_span!(parent: &span, "execute").entered();
-                stmt.execute([serde_json::to_string(
-                    &sessions
-                        .into_iter()
-                        .map(|session| Session::from_grpc(session, cluster.name.clone()))
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap()])?;
+                let sessions = sessions
+                    .into_iter()
+                    .map(|session| Session::from_grpc(session, cluster.name.clone()))
+                    .collect::<Vec<_>>();
+                // `Rc` is !Send, so the arrays are built here rather than captured.
+                let columns = SESSION_COLUMNS.map(|(_, get)| -> rusqlite::vtab::array::Array {
+                    Rc::new(sessions.iter().map(get).collect())
+                });
+                stmt.execute(rusqlite::params_from_iter(columns.iter()))?;
 
                 Result::<(), rusqlite::Error>::Ok(())
             })
@@ -1284,6 +1318,135 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The upsert zips 13 independent arrays back into rows, so a column landing in the
+    /// wrong slot, or one array being read at the wrong position, would corrupt the
+    /// mirror silently. Every column here carries a value that could not come from any
+    /// other one.
+    #[test]
+    #[cfg_attr(miri, ignore)] // SQLite is a C library, MIRI cannot call into it
+    fn upsert_puts_every_column_in_its_own_slot() {
+        let db = DB::new(&ServiceOptions {
+            sqlite_path: Some(String::from("file:/armonik_load_balancer_upsert?vfs=memdb")),
+            ..Default::default()
+        });
+        db.connection().execute_batch(CREATE_SESSION_TABLE).unwrap();
+
+        let options = |key: &str| sessions::TaskOptions {
+            options: [(String::from(key), String::from("v\"quoted"))]
+                .into_iter()
+                .collect(),
+            max_duration: 0.25,
+            max_retries: -3,
+            priority: 7,
+            partition_id: String::from("part"),
+            application_name: String::from("app"),
+            application_version: String::from("1.0"),
+            application_namespace: String::from("ns"),
+            application_service: String::from("svc"),
+            engine_type: String::from("Unified"),
+        };
+
+        // Row 1 fills every optional, row 2 leaves them all NULL and empties the list.
+        let rows = vec![
+            Session {
+                session_id: String::from("id-1"),
+                cluster: String::from("cluster-1"),
+                status: 3,
+                client_submission: true,
+                worker_submission: false,
+                partition_ids: vec![String::from("p \"one\""), String::from("p/two")],
+                default_task_options: options("k\u{e9}"),
+                created_at: Some(1.0),
+                cancelled_at: Some(2.5),
+                closed_at: Some(3.5),
+                purged_at: Some(4.5),
+                deleted_at: Some(5.5),
+                duration: Some(6.5),
+            },
+            Session {
+                session_id: String::from("id-2"),
+                cluster: String::from("cluster-2"),
+                status: 0,
+                client_submission: false,
+                worker_submission: true,
+                partition_ids: Vec::new(),
+                default_task_options: options("other"),
+                created_at: None,
+                cancelled_at: None,
+                closed_at: None,
+                purged_at: None,
+                deleted_at: None,
+                duration: None,
+            },
+        ];
+
+        let columns = SESSION_COLUMNS.map(|(_, get)| -> rusqlite::vtab::array::Array {
+            Rc::new(rows.iter().map(get).collect())
+        });
+        db.connection()
+            .prepare_cached(&UPSERT_SESSIONS)
+            .unwrap()
+            .execute(rusqlite::params_from_iter(columns.iter()))
+            .unwrap();
+
+        // Read back through the same JSON projection `sessions::list` uses.
+        let read = |id: &str| -> Session {
+            let json: String = db
+                .connection()
+                .query_row(
+                    "SELECT json_object(
+                        'session_id', session_id,
+                        'cluster', cluster,
+                        'status', status,
+                        'client_submission', json(iif(client_submission, 'true', 'false')),
+                        'worker_submission', json(iif(worker_submission, 'true', 'false')),
+                        'partition_ids', json(partition_ids),
+                        'default_task_options', json(default_task_options),
+                        'created_at', created_at,
+                        'cancelled_at', cancelled_at,
+                        'closed_at', closed_at,
+                        'purged_at', purged_at,
+                        'deleted_at', deleted_at,
+                        'duration', duration
+                    ) FROM session WHERE session_id = ?",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            serde_json::from_str(&json).unwrap()
+        };
+
+        for expected in &rows {
+            let got = read(&expected.session_id);
+            let (expected, got) = (
+                serde_json::to_value(expected).unwrap(),
+                serde_json::to_value(&got).unwrap(),
+            );
+            assert_eq!(expected, got, "round-trip changed the row");
+        }
+
+        // Storage classes have to survive too: a REAL arriving as TEXT would still
+        // compare equal through JSON but would break the range filters.
+        let types: Vec<String> = db
+            .connection()
+            .prepare("SELECT typeof(status), typeof(created_at), typeof(duration) FROM session WHERE session_id = 'id-1'")
+            .unwrap()
+            .query_row([], |row| Ok(vec![row.get(0)?, row.get(1)?, row.get(2)?]))
+            .unwrap();
+        assert_eq!(types, ["integer", "real", "real"]);
+
+        let nulls: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM session WHERE session_id = 'id-2'
+                 AND created_at IS NULL AND duration IS NULL AND partition_ids = '[]'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(nulls, 1);
     }
 
     /// `rarray` is registered per connection, so a connection opened without it would
