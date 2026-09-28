@@ -50,8 +50,8 @@ struct Cli {
 /// Wait for termination signal (either SIGINT or SIGTERM)
 #[cfg(unix)]
 async fn wait_terminate() {
-    use futures::{stream::FuturesUnordered, StreamExt};
-    use tokio::signal::unix::{signal, SignalKind};
+    use futures::{StreamExt, stream::FuturesUnordered};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut signals = Vec::new();
 
     // Register signal handlers

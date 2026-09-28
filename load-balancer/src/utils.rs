@@ -1,6 +1,6 @@
 use armonik::reexports::tonic::Status;
 
-use futures::{stream::futures_unordered, Stream, StreamExt};
+use futures::{Stream, StreamExt, stream::futures_unordered};
 
 /// Implement a unary proxying endpoint: resolve the cluster owning the request's id
 /// (the `session`/`result`/`task` selector picks the resolver and the not-found message),

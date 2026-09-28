@@ -7,7 +7,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{try_rpc, IntoStatus, RecoverableResult};
+use crate::utils::{IntoStatus, RecoverableResult, try_rpc};
 
 use super::Service;
 

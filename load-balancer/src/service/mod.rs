@@ -5,8 +5,8 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        atomic::{AtomicI32, AtomicUsize},
         Arc,
+        atomic::{AtomicI32, AtomicUsize},
     },
 };
 
@@ -19,7 +19,7 @@ use thread_local::ThreadLocal;
 
 use crate::{
     cluster::Cluster,
-    utils::{merge_streams, IntoStatus},
+    utils::{IntoStatus, merge_streams},
 };
 
 mod applications;
@@ -1168,8 +1168,8 @@ mod tests {
     /// Runs writers and `list_sessions`-shaped readers against one configuration and
     /// returns whatever failed.
     fn hammer(options: &ServiceOptions, duration: std::time::Duration) -> Vec<String> {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         let db = DB::new(options);
         db.connection().unwrap()

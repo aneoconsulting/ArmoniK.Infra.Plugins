@@ -9,7 +9,7 @@ use futures::stream::FuturesUnordered;
 
 use crate::{
     cluster::Cluster,
-    utils::{try_rpc, IntoStatus, RecoverableResult},
+    utils::{IntoStatus, RecoverableResult, try_rpc},
 };
 
 use super::Service;

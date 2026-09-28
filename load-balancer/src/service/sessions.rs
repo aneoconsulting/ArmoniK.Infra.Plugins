@@ -11,7 +11,7 @@ use armonik::{
 use rusqlite::params_from_iter;
 use serde::{Deserialize, Serialize};
 
-use crate::utils::{impl_unary, try_rpc, IntoStatus};
+use crate::utils::{IntoStatus, impl_unary, try_rpc};
 
 use super::Service;
 
@@ -170,8 +170,12 @@ impl SessionsService for Service {
                         sessions::filter::Condition::Array(cond) => {
                             params.push(Box::new(cond.value.clone()));
                             match &cond.operator {
-                                armonik::FilterArrayOperator::Contains => format!("EXISTS (SELECT 1 FROM json_each({column}) WHERE value = ?)"),
-                                armonik::FilterArrayOperator::NotContains => format!("NOT EXISTS (SELECT 1 FROM json_each({column}) WHERE value = ?)"),
+                                armonik::FilterArrayOperator::Contains => format!(
+                                    "EXISTS (SELECT 1 FROM json_each({column}) WHERE value = ?)"
+                                ),
+                                armonik::FilterArrayOperator::NotContains => format!(
+                                    "NOT EXISTS (SELECT 1 FROM json_each({column}) WHERE value = ?)"
+                                ),
                             }
                         }
                     };
@@ -358,22 +362,26 @@ impl SessionsService for Service {
                             // throttles creates instead of queueing unbounded writes on rayon.
                             if let Err(err) = self
                                 .add_sessions(
-                                    vec![Session {
-                                        session_id: response.session_id.clone(),
-                                        cluster: cluster.name.clone(),
-                                        status: armonik::SessionStatus::Running as i32 as u8,
-                                        client_submission: true,
-                                        worker_submission: true,
-                                        partition_ids: request.partition_ids,
-                                        default_task_options: request.default_task_options.into(),
-                                        created_at: None,
-                                        cancelled_at: None,
-                                        closed_at: None,
-                                        purged_at: None,
-                                        deleted_at: None,
-                                        duration: None,
-                                    }
-                                    .into()],
+                                    vec![
+                                        Session {
+                                            session_id: response.session_id.clone(),
+                                            cluster: cluster.name.clone(),
+                                            status: armonik::SessionStatus::Running as i32 as u8,
+                                            client_submission: true,
+                                            worker_submission: true,
+                                            partition_ids: request.partition_ids,
+                                            default_task_options: request
+                                                .default_task_options
+                                                .into(),
+                                            created_at: None,
+                                            cancelled_at: None,
+                                            closed_at: None,
+                                            purged_at: None,
+                                            deleted_at: None,
+                                            duration: None,
+                                        }
+                                        .into(),
+                                    ],
                                     cluster.clone(),
                                 )
                                 .await
