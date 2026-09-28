@@ -354,6 +354,8 @@ impl SessionsService for Service {
                             self.mapping_session
                                 .insert(response.session_id.clone(), cluster.clone());
 
+                            // Awaited so `list` sees the session on return, and so slow SQLite
+                            // throttles creates instead of queueing unbounded writes on rayon.
                             if let Err(err) = self
                                 .add_sessions(
                                     vec![Session {
