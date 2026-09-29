@@ -543,6 +543,8 @@ impl Service {
                             for session in &sessions {
                                 missing_ids.remove(session.session_id.as_str());
                                 cluster_mapping.push(session.session_id.clone());
+                                self.mapping_session
+                                    .insert(session.session_id.clone(), cluster.clone());
                             }
 
                             self.add_sessions(sessions, cluster.clone()).await?;
