@@ -6,7 +6,7 @@ use armonik::{
     server::{ApplicationsService, RequestContext},
 };
 
-use crate::utils::{merge_streams, try_rpc, IntoStatus, RecoverableResult};
+use crate::utils::{IntoStatus, RecoverableResult, merge_streams, try_rpc};
 
 use super::Service;
 
@@ -95,7 +95,7 @@ impl ApplicationsService for Service {
                             armonik::SortDirection::Unspecified | armonik::SortDirection::Asc,
                         ) => return std::cmp::Ordering::Less,
                         (std::cmp::Ordering::Less, armonik::SortDirection::Desc) => {
-                            return std::cmp::Ordering::Greater
+                            return std::cmp::Ordering::Greater;
                         }
                         (std::cmp::Ordering::Equal, _) => (),
                         (
@@ -103,7 +103,7 @@ impl ApplicationsService for Service {
                             armonik::SortDirection::Unspecified | armonik::SortDirection::Asc,
                         ) => return std::cmp::Ordering::Greater,
                         (std::cmp::Ordering::Greater, armonik::SortDirection::Desc) => {
-                            return std::cmp::Ordering::Less
+                            return std::cmp::Ordering::Less;
                         }
                     }
                 }

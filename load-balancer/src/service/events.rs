@@ -17,8 +17,8 @@ impl EventsService for Service {
         context: RequestContext,
     ) -> Result<
         impl tonic::codegen::tokio_stream::Stream<
-                Item = Result<events::subscribe::Response, tonic::Status>,
-            > + Send,
+            Item = Result<events::subscribe::Response, tonic::Status>,
+        > + Send,
         tonic::Status,
     > {
         let events::subscribe::Request {

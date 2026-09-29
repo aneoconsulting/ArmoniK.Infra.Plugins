@@ -9,7 +9,7 @@ use futures::stream::FuturesUnordered;
 
 use crate::{
     cluster::Cluster,
-    utils::{try_rpc, IntoStatus, RecoverableResult},
+    utils::{IntoStatus, RecoverableResult, try_rpc},
 };
 
 use super::Service;
@@ -257,8 +257,8 @@ impl ResultsService for Service {
         context: RequestContext,
     ) -> Result<
         impl tonic::codegen::tokio_stream::Stream<
-                Item = Result<results::download::Response, tonic::Status>,
-            > + Send,
+            Item = Result<results::download::Response, tonic::Status>,
+        > + Send,
         tonic::Status,
     > {
         let Some(cluster) = try_rpc!(try self
@@ -297,9 +297,9 @@ impl ResultsService for Service {
     async fn upload(
         self: Arc<Self>,
         request: impl tonic::codegen::tokio_stream::Stream<
-                Item = Result<results::upload::Request, tonic::Status>,
-            > + Send
-            + 'static,
+            Item = Result<results::upload::Request, tonic::Status>,
+        > + Send
+        + 'static,
         context: RequestContext,
     ) -> Result<results::upload::Response, tonic::Status> {
         let mut request = Box::pin(request);

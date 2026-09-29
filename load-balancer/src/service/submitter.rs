@@ -9,7 +9,7 @@ use armonik::{
 };
 use futures::stream::FuturesUnordered;
 
-use crate::utils::{impl_unary, try_rpc, IntoStatus, RecoverableResult};
+use crate::utils::{IntoStatus, RecoverableResult, impl_unary, try_rpc};
 
 use super::Service;
 
@@ -19,7 +19,9 @@ impl SubmitterService for Service {
         _request: submitter::get_service_configuration::Request,
         context: RequestContext,
     ) -> std::result::Result<submitter::get_service_configuration::Response, tonic::Status> {
-        tracing::warn!("SubmitterService::GetServiceConfiguration is deprecated, please use ResultsService::GetServiceConfiguration instead");
+        tracing::warn!(
+            "SubmitterService::GetServiceConfiguration is deprecated, please use ResultsService::GetServiceConfiguration instead"
+        );
 
         // Try to get the cached value
         let size = self
@@ -97,7 +99,9 @@ impl SubmitterService for Service {
         request: submitter::create_session::Request,
         context: RequestContext,
     ) -> std::result::Result<submitter::create_session::Response, tonic::Status> {
-        tracing::warn!("SubmitterService::CreateSession is deprecated, please use SessionsService::CreateSession instead");
+        tracing::warn!(
+            "SubmitterService::CreateSession is deprecated, please use SessionsService::CreateSession instead"
+        );
 
         // Same round-robin pinning as SessionsService::create, but the new session is
         // not recorded locally: the first request referencing it resolves the cluster
@@ -141,7 +145,9 @@ impl SubmitterService for Service {
         request: submitter::cancel_session::Request,
         context: RequestContext,
     ) -> std::result::Result<submitter::cancel_session::Response, tonic::Status> {
-        tracing::warn!("SubmitterService::CancelSession is deprecated, please use SessionsService::CancelSession instead");
+        tracing::warn!(
+            "SubmitterService::CancelSession is deprecated, please use SessionsService::CancelSession instead"
+        );
 
         impl_unary!(self.submitter, request, context, session)
     }
@@ -212,7 +218,9 @@ impl SubmitterService for Service {
         request: submitter::list_sessions::Request,
         context: RequestContext,
     ) -> std::result::Result<submitter::list_sessions::Response, tonic::Status> {
-        tracing::warn!("SubmitterService::ListSessions is deprecated, please use SessionsService::ListSessions instead");
+        tracing::warn!(
+            "SubmitterService::ListSessions is deprecated, please use SessionsService::ListSessions instead"
+        );
 
         let mut session_ids = Vec::new();
 
@@ -347,7 +355,9 @@ impl SubmitterService for Service {
         request: submitter::wait_for_availability::Request,
         context: RequestContext,
     ) -> std::result::Result<submitter::wait_for_availability::Response, tonic::Status> {
-        tracing::warn!("SubmitterService::WaitForAvailability is deprecated, please use EventsService::GetEvents instead");
+        tracing::warn!(
+            "SubmitterService::WaitForAvailability is deprecated, please use EventsService::GetEvents instead"
+        );
         crate::utils::impl_unary!(self.submitter, request, context, session)
     }
 
@@ -356,7 +366,9 @@ impl SubmitterService for Service {
         request: submitter::wait_for_completion::Request,
         context: RequestContext,
     ) -> std::result::Result<submitter::wait_for_completion::Response, tonic::Status> {
-        tracing::warn!("SubmitterService::WaitForCompletion is deprecated, please use EventsService::GetEvents instead");
+        tracing::warn!(
+            "SubmitterService::WaitForCompletion is deprecated, please use EventsService::GetEvents instead"
+        );
         let mut status_count = HashMap::new();
 
         let mut wait_all = self
@@ -491,10 +503,10 @@ impl SubmitterService for Service {
                 }
             }
         }
-        if let Some(error) = error {
-            if !success {
-                try_rpc!(bail error);
-            }
+        if let Some(error) = error
+            && !success
+        {
+            try_rpc!(bail error);
         }
 
         Ok(submitter::cancel_tasks::Response {})
@@ -543,10 +555,10 @@ impl SubmitterService for Service {
                 task_status.insert(task_id, status);
             }
         }
-        if let Some(error) = error {
-            if task_status.is_empty() {
-                try_rpc!(bail error);
-            }
+        if let Some(error) = error
+            && task_status.is_empty()
+        {
+            try_rpc!(bail error);
         }
 
         Ok(submitter::task_status::Response {
@@ -559,7 +571,9 @@ impl SubmitterService for Service {
         request: submitter::result_status::Request,
         context: RequestContext,
     ) -> std::result::Result<submitter::result_status::Response, tonic::Status> {
-        tracing::warn!("SubmitterService::ResultStatus is deprecated, please use ResultsService::ListResults instead");
+        tracing::warn!(
+            "SubmitterService::ResultStatus is deprecated, please use ResultsService::ListResults instead"
+        );
         crate::utils::impl_unary!(self.submitter, request, context, session)
     }
 
@@ -569,8 +583,8 @@ impl SubmitterService for Service {
         context: RequestContext,
     ) -> Result<
         impl tonic::codegen::tokio_stream::Stream<
-                Item = Result<submitter::try_get_result::Response, tonic::Status>,
-            > + Send,
+            Item = Result<submitter::try_get_result::Response, tonic::Status>,
+        > + Send,
         tonic::Status,
     > {
         tracing::warn!(
@@ -619,9 +633,9 @@ impl SubmitterService for Service {
     async fn create_large_tasks(
         self: Arc<Self>,
         request: impl tonic::codegen::tokio_stream::Stream<
-                Item = Result<submitter::create_tasks::LargeRequest, tonic::Status>,
-            > + Send
-            + 'static,
+            Item = Result<submitter::create_tasks::LargeRequest, tonic::Status>,
+        > + Send
+        + 'static,
         context: RequestContext,
     ) -> Result<submitter::create_tasks::Response, tonic::Status> {
         tracing::warn!(

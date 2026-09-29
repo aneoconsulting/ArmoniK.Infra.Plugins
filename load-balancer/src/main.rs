@@ -8,7 +8,7 @@ use armonik::reexports::tonic;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use tracing as _;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
+use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 pub mod bag;
 pub mod cluster;
@@ -56,8 +56,8 @@ pub struct Cli {
 /// Wait for termination signal (either SIGINT or SIGTERM)
 #[cfg(unix)]
 async fn wait_terminate() {
-    use futures::{stream::FuturesUnordered, StreamExt};
-    use tokio::signal::unix::{signal, SignalKind};
+    use futures::{StreamExt, stream::FuturesUnordered};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut signals = Vec::new();
 
     // Register signal handlers
@@ -179,15 +179,17 @@ async fn main() -> Result<(), eyre::Report> {
     let conf: LbConfig = conf.build()?.try_deserialize()?;
     match conf.log_format {
         LogFormat::Pretty => tracing_init!(tracing_subscriber::fmt::layer()),
-        LogFormat::Json => tracing_init!(tracing_subscriber::fmt::layer()
-            .json()
-            .with_current_span(true)
-            .with_span_list(true)
-            .with_target(true)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_file(false)
-            .with_line_number(false)),
+        LogFormat::Json => tracing_init!(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_current_span(true)
+                .with_span_list(true)
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_file(false)
+                .with_line_number(false)
+        ),
     }
 
     tracing::trace!("{conf:?}");

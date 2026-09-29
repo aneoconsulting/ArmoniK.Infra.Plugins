@@ -1,6 +1,6 @@
-use json_patch::{jsonptr::PointerBuf, AddOperation, PatchOperation};
+use json_patch::{AddOperation, PatchOperation, jsonptr::PointerBuf};
 use k8s_openapi::api::core::v1::Pod;
-use kube::{api::PatchParams, Api};
+use kube::{Api, api::PatchParams};
 
 use super::{WorkerUpdate, WorkerUpdater};
 
