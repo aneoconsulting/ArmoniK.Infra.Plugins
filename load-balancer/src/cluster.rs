@@ -425,3 +425,33 @@ impl ClusterClient<'_> {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // crossbeam-epoch is currently incompatible with MIRI: https://github.com/crossbeam-rs/crossbeam/issues/1181
+    async fn multiplexed_client_is_released_once() {
+        let cluster = Cluster::new(
+            String::from("test"),
+            ClusterConfig {
+                multiplex: true,
+                ..Default::default()
+            },
+        );
+        // Lazy channel: nothing listens on the endpoint, and no request is sent.
+        let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        cluster
+            .client
+            .push((armonik::Client::with_channel(channel), NonZeroUsize::new(3)));
+
+        // Released once at acquisition; dropping it must not release it again.
+        drop(cluster.client(&RequestContext::default()).await.unwrap());
+
+        let budgets = std::iter::from_fn(|| cluster.client.pop())
+            .map(|(_, requests)| requests)
+            .collect::<Vec<_>>();
+        assert_eq!(budgets, [NonZeroUsize::new(2)]);
+    }
+}
