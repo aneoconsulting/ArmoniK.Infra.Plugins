@@ -472,7 +472,10 @@ impl Service {
 
             for (cluster_name, mut sessions_ids) in name_mapping {
                 let cluster = self.clusters[&cluster_name].clone();
-                self.mapping_session.insert(cluster_name, cluster.clone());
+                for session_id in &sessions_ids {
+                    self.mapping_session
+                        .insert(session_id.clone(), cluster.clone());
+                }
                 match mapping.entry(cluster) {
                     std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
                         occupied_entry.get_mut().append(&mut sessions_ids);
