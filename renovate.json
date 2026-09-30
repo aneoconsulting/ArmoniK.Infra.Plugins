@@ -13,13 +13,23 @@
       "groupName": "release packages Armonik"
     },
     {
-      "matchPackagePatterns": [
-        "*"
-      ],
-      "excludePackagePrefixes": [
-        "ArmoniK"
+      "matchPackageNames": [
+        "!ArmoniK{/,}**"
       ],
       "groupName": "other dependencies"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Cargo tools installed in Dockerfiles",
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+ARG \\w+_VERSION=(?<currentValue>\\S+)"
+      ],
+      "versioningTemplate": "semver"
     }
   ]
 }
