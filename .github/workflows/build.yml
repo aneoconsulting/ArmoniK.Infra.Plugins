@@ -71,6 +71,7 @@ jobs:
           context: "${{ matrix.image.path }}"
           platforms: "${{ matrix.image.platforms }}"
           push: true
+          sbom: true
           tags: |
               dockerhubaneo/${{ matrix.image.name }}:${{ needs.versionning.outputs.version }}
   rust:
