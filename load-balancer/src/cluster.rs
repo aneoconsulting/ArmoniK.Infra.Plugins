@@ -206,7 +206,7 @@ impl Cluster {
             internal,
             client,
             requests,
-            bag: &self.client,
+            bag: Some(&self.client),
             permit,
             span: tracing::debug_span!("Cluster", name = self.name),
         };
@@ -251,14 +251,14 @@ impl tonic::client::GrpcService<tonic::body::Body> for ClusterClientInternal {
     }
 }
 
-/// Pooled connection handle. On drop, the connection goes back into the bag with a
-/// decremented request budget; once the budget hits zero it is discarded instead,
-/// forcing a reconnection.
+/// Pooled connection handle. On drop (or at acquisition in multiplexed mode), the
+/// connection goes back into the bag with a decremented request budget; once the
+/// budget hits zero it is discarded instead, forcing a reconnection.
 pub struct ClusterClient<'a> {
     internal: armonik::Client<ClusterClientInternal>,
     client: armonik::Client,
     requests: Option<NonZeroUsize>,
-    bag: &'a Bag<(armonik::Client, Option<NonZeroUsize>)>,
+    bag: Option<&'a Bag<(armonik::Client, Option<NonZeroUsize>)>>,
     permit: Option<SemaphorePermit<'a>>,
     span: tracing::Span,
 }
@@ -293,15 +293,17 @@ impl ClusterClient<'_> {
         self.span.clone()
     }
     /// Return the connection to the pool (dropping it when its request budget is
-    /// exhausted) and release the pool slot.
+    /// exhausted) and release the pool slot. Idempotent.
     fn release(&mut self) {
-        match self.requests {
-            Some(size) => {
-                if let Some(size) = NonZeroUsize::new(size.get() - 1) {
-                    self.bag.push((self.client.clone(), Some(size)));
+        if let Some(bag) = self.bag.take() {
+            match self.requests {
+                Some(size) => {
+                    if let Some(size) = NonZeroUsize::new(size.get() - 1) {
+                        bag.push((self.client.clone(), Some(size)));
+                    }
                 }
+                None => bag.push((self.client.clone(), None)),
             }
-            None => self.bag.push((self.client.clone(), None)),
         }
         std::mem::drop(self.permit.take());
     }
@@ -421,5 +423,35 @@ impl ClusterClient<'_> {
             },
             tracing::trace_span!("get_all_applications"),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // crossbeam-epoch is currently incompatible with MIRI: https://github.com/crossbeam-rs/crossbeam/issues/1181
+    async fn multiplexed_client_is_released_once() {
+        let cluster = Cluster::new(
+            String::from("test"),
+            ClusterConfig {
+                multiplex: true,
+                ..Default::default()
+            },
+        );
+        // Lazy channel: nothing listens on the endpoint, and no request is sent.
+        let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        cluster
+            .client
+            .push((armonik::Client::with_channel(channel), NonZeroUsize::new(3)));
+
+        // Released once at acquisition; dropping it must not release it again.
+        drop(cluster.client(&RequestContext::default()).await.unwrap());
+
+        let budgets = std::iter::from_fn(|| cluster.client.pop())
+            .map(|(_, requests)| requests)
+            .collect::<Vec<_>>();
+        assert_eq!(budgets, [NonZeroUsize::new(2)]);
     }
 }
