@@ -2,7 +2,9 @@ FROM --platform=$BUILDPLATFORM rust as build
 
 RUN apt-get update && apt-get install -y musl-tools musl-dev protobuf-compiler ca-certificates && update-ca-certificates
 # Embed dep tree in the binary so the SBOM scanner sees it in the scratch image
-RUN cargo install cargo-auditable --locked --version 0.7.6
+# renovate: datasource=crate depName=cargo-auditable
+ARG CARGO_AUDITABLE_VERSION=0.7.6
+RUN cargo install cargo-auditable --locked --version "$CARGO_AUDITABLE_VERSION"
 RUN case "$TARGETARCH" in \
         amd64) RUST_PLATFORM=x86_64-unknown-linux-musl ;; \
         arm64) RUST_PLATFORM=aarch64-unknown-linux-musl ;; \
