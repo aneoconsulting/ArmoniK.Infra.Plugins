@@ -30,8 +30,7 @@ RUN cargo auditable build --release
 COPY src src
 RUN touch src/main.rs && cargo auditable build --release && mv target/*/release/pdc-update .
 
-FROM scratch
+FROM gcr.io/distroless/static-debian13
 COPY --from=build /app/pdc-update /pdc-update
-USER 65534:65534
 ENTRYPOINT ["/pdc-update"]
 CMD []
