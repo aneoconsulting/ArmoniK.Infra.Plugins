@@ -29,9 +29,7 @@ RUN cargo auditable build --release
 COPY src src
 RUN touch src/main.rs && cargo auditable build --release && mv target/*/release/load-balancer .
 
-FROM scratch
-COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+FROM gcr.io/distroless/static-debian13
 COPY --from=build /app/load-balancer /load-balancer
-USER 65534:65534
 ENTRYPOINT ["/load-balancer"]
 CMD []
