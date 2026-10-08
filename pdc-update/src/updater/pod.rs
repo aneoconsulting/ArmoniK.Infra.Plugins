@@ -49,12 +49,12 @@ impl WorkerUpdater for PodUpdater {
 
         match client.patch(&name, &patch_params, &patch).await {
             Ok(_) => {
-                log::trace!("Successfully patched pod {name} with cost {cost}");
+                log::trace!("Successfully patched pod `{name}` with cost {cost}");
                 Ok(())
             }
             // Pod not found can be safely ignored as it happens during scale down
             Err(kube::Error::Api(err)) if err.code == 404 => {
-                log::trace!("Could not patch pod {name} with cost {cost}: not found");
+                log::trace!("Could not patch pod `{name}` with cost {cost}: not found");
                 Ok(())
             }
             Err(err) => Err(err.into()),
