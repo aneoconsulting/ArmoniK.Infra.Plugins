@@ -41,8 +41,8 @@ impl MetricsScraper for PrometheusScraper {
                     Err(err) => {
                         // Ignore metrics that could not be parsed
                         log::error!(
-                            "Could not parse metrics for {}: {}: {}",
-                            result.metric.kubernetes_pod_name,
+                            "Could not parse metrics for `{}`: {}: {}",
+                            result.metric.pod,
                             err,
                             result.value.1,
                         );
@@ -51,8 +51,8 @@ impl MetricsScraper for PrometheusScraper {
                 };
 
                 Some(MetricsValue {
-                    name: result.metric.kubernetes_pod_name.to_owned(),
-                    namespace: result.metric.kubernetes_namespace.to_owned(),
+                    name: result.metric.pod.to_owned(),
+                    namespace: result.metric.namespace.to_owned(),
                     timestamp: result.value.0,
                     value,
                 })
@@ -95,9 +95,12 @@ struct PrometheusMetric<'a> {
     name: &'a str,
     instance: &'a str,
     job: &'a str,
-    kubernetes_namespace: &'a str,
-    kubernetes_pod_name: &'a str,
-    kubernetes_pod_node_name: &'a str,
+    #[serde(alias = "kubernetes_pod_name")]
+    pod: &'a str,
+    #[serde(alias = "kubernetes_namespace")]
+    namespace: &'a str,
+    #[serde(alias = "kubernetes_pod_node_name")]
+    node: &'a str,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
