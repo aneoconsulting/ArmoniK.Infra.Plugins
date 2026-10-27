@@ -37,7 +37,7 @@ RUN cargo auditable build --release --target "$(rustup target list --installed |
 COPY src src
 RUN touch src/main.rs && cargo auditable build --release --target "$(rustup target list --installed | grep musl)" && mv target/*/release/load-balancer .
 
-FROM gcr.io/distroless/static-debian13
+FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /app/load-balancer /load-balancer
 ENTRYPOINT ["/load-balancer"]
 CMD []

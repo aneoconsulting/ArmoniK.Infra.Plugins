@@ -36,7 +36,7 @@ RUN cargo auditable build --release --target "$(rustup target list --installed |
 COPY src src
 RUN touch src/main.rs && cargo auditable build --release --target "$(rustup target list --installed | grep musl)" && mv target/*/release/pdc-update .
 
-FROM gcr.io/distroless/static-debian13
+FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /app/pdc-update /pdc-update
 ENTRYPOINT ["/pdc-update"]
 CMD []
