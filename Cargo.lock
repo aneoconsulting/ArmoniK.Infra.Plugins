@@ -99,9 +99,9 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "armonik"
-version = "3.29.3-beta-0"
+version = "3.29.4-beta-0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5454106a9e9642812a7e1a322ef42eb46fd3c7248e01ec3b4063d50e30ca8fd"
+checksum = "a1061baaee96bb6e5ebfd347ed2a65c15f7b83f65c1fc750fba2be829b1df91d"
 dependencies = [
  "armonik-transport",
  "futures",
@@ -120,9 +120,9 @@ dependencies = [
 
 [[package]]
 name = "armonik-transport"
-version = "3.29.3-beta-0"
+version = "3.29.4-beta-0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0994360cb11e2cc9278cc1a5ea0296b22ca970e71f63000eac06b78112fcc0ec"
+checksum = "36840ec94cb2838733b42574a752db71adb95d1b4271697e069329d09d850b91"
 dependencies = [
  "humantime",
  "hyper",
@@ -1609,9 +1609,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.38.2"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -2444,9 +2444,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.40.2"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+checksum = "9c026b4444579e8d754556c6c75d040d69c4a44283cdb648ab8a8d5965c2cfa8"
 dependencies = [
  "bitflags 2.13.2",
  "fallible-iterator",
